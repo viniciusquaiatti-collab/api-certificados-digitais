@@ -11,13 +11,14 @@ class AuthController {
    */
   static async register(req, res) {
     console.log('--- [AuthController.register] Iniciando registro de novo usuário ---');
-    const { nome, email, senha } = req.body;
+    // Correção: Mapear o campo 'password' do JSON para a variável 'senha'
+    const { nome, email, password: senha } = req.body;
     const ip_address = req.ip || req.connection.remoteAddress;
     const user_agent = req.headers['user-agent'];
 
     console.log(`Dados recebidos: Nome=${nome}, Email=${email}`);
 
-    // Validação de entrada
+    // Validação de entrada (ainda válida, mas redundante com o Zod)
     if (!nome || !email || !senha) {
       console.warn('[AuthController.register] Tentativa de registro com dados incompletos.');
       return res.status(400).json({ error: 'Nome, email e senha são obrigatórios.' });
@@ -64,13 +65,14 @@ class AuthController {
    */
   static async login(req, res) {
     console.log('--- [AuthController.login] Iniciando tentativa de login ---');
-    const { email, senha } = req.body;
+    // Correção: Mapear o campo 'password' do JSON para a variável 'senha'
+    const { email, password: senha } = req.body;
     const ip_address = req.ip || req.connection.remoteAddress;
     const user_agent = req.headers['user-agent'];
 
     console.log(`Tentativa de login para o email: ${email} a partir do IP: ${ip_address}`);
 
-    // Validação de entrada
+    // Validação de entrada (ainda válida, mas redundante com o Zod)
     if (!email || !senha) {
       console.warn('[AuthController.login] Tentativa de login com email ou senha em branco.');
       return res.status(400).json({ error: 'Email e senha são obrigatórios.' });
