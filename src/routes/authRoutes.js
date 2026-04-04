@@ -1,11 +1,15 @@
 const express = require('express');
-const AuthController = require('../controllers/authController');
 const router = express.Router();
+const authController = require('../controllers/authController');
+const { registerSchema, loginSchema } = require('../schemas');
+const validate = require('../middlewares/validateSchema');
 
-// Rota de registro do usuário
-router.post('/register', AuthController.register);
+console.log('[AuthRoutes] Definindo rotas de autenticação com validação Zod.');
 
-// Roota de Login 
-router.post('/login', AuthController.login);
+// Rota de registro agora valida os dados antes de passar para o controller
+router.post('/register', validate({ body: registerSchema }), authController.register);
+
+// Rota de login também
+router.post('/login', validate({ body: loginSchema }), authController.login);
 
 module.exports = router;

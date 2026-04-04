@@ -1,14 +1,16 @@
 const express = require('express');
 const router = express.Router();
-
-// Importação do controlador e do middleware que nós criamos
-const CertificateController = require('../controllers/certificateController');
+const certificateController = require('../controllers/certificateController');
 const authMiddleware = require('../middlewares/authMiddleware');
+const { createCertificateSchema, verifyCertificateSchema } = require('../schemas');
+const validate = require('../middlewares/validateSchema');
 
-// Rota para criar um novo certificado (protegida por autenticação)
-router.post('/', authMiddleware, CertificateController.createCertificate);
+console.log('[CertificateRoutes] Definindo rotas de certificados com validação Zod.');
 
-// Rota para verificar um certificado (pública)
-router.get('/verify/:code', CertificateController.verifyCertificate);
+// Rota para criar certificado, exigindo autenticação e validação dos dados
+router.post('/', authMiddleware, validate({ body: createCertificateSchema }), certificateController.createCertificate);
+
+// Rota de verificação, que agora valida o código antes de buscar
+router.get('/verify/:codigo', validate({ params: verifyCertificateSchema }), certificateController.verifyCertificate);
 
 module.exports = router;
