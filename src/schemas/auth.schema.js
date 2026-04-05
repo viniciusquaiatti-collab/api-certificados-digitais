@@ -2,9 +2,8 @@ const z = require('zod');
 
 console.log('[Schemas] Iniciando o carregamento dos schemas de validação...');
 
-// Schema para o registro de um novo usuário
+// Schema para o registro de um novo usuário (APENAS email + senha)
 const registerSchema = z.object({
-  nome: z.string().min(2, { message: 'O nome deve ter pelo menos 2 caracteres.' }),
   email: z.string().email({ message: 'O formato do e-mail é inválido.' }),
   password: z.string().min(6, { message: 'A senha deve ter pelo menos 6 caracteres.' }),
 });

@@ -1,4 +1,4 @@
-const { registerSchema, loginSchema, createCertificateSchema } = require('../../src/schemas');
+const { registerSchema, loginSchema, createCertificateSchema } = require('../../src/schemas/auth.schema');
 
 describe('Schemas de Validação', () => {
   describe('registerSchema', () => {
