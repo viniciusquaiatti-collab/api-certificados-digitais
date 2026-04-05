@@ -15,8 +15,9 @@ yarn.lock
 logs/
 dist/
 build/
-src/certificates/
+public/certificates/
 uploads/
+src/certificates/
 
 # Configurações de editor
 .vscode/
