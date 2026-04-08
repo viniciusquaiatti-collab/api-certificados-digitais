@@ -1,4 +1,4 @@
-// app.js
+// app.js - VERSÃO CORRIGIDA PARA RAILWAY (copie tudo)
 require('dotenv').config();
 
 const express = require('express');
@@ -13,10 +13,10 @@ const certificateRoutes = require('./src/routes/certificateRoutes');
 
 const app = express();
 
-// 🔥 PORTA (Railway usa process.env.PORT automaticamente)
+// PORTA (Railway usa process.env.PORT automaticamente)
 const PORT = process.env.PORT || 8080;
 
-// 🔥 IMPORTANTE PRA RAILWAY (proxy)
+// TRUST PROXY (Railway)
 app.set('trust proxy', 1);
 
 // --- MIDDLEWARES GLOBAIS ---
@@ -37,7 +37,7 @@ const limiter = rateLimit({
 
 app.use('/api', limiter);
 
-// --- LOGS ---
+// --- LOGS DETALHADOS ---
 app.use((req, res, next) => {
   console.log(
     `[${new Date().toISOString()}] ${req.method} ${req.originalUrl} - IP: ${req.ip}`
@@ -46,23 +46,25 @@ app.use((req, res, next) => {
 });
 
 // ==========================
-// 🔥 ROTA RAIZ (ESSENCIAL)
+//  ROTA RAIZ (ESSENCIAL PARA TESTE)
 // ==========================
 app.get('/', (req, res) => {
   res.status(200).json({
     success: true,
-    message: '🚀 API Certificados Digitais ONLINE',
+    message: ' API Certificados Digitais ONLINE - Railway OK!',
+    port: PORT,
     docs: {
       health: '/api/health',
       auth: '/api/auth',
-      certificates: '/api/certificates'
+      certificates: '/api/certificates',
+      teste: '/teste'
     }
   });
 });
 
-// 🔥 TESTE RÁPIDO
+//  TESTE RÁPIDO (TEXTO SIMPLES)
 app.get('/teste', (req, res) => {
-  res.send('🚀 API ONLINE');
+  res.send(' API ONLINE - Funcionando no Railway!');
 });
 
 // --- HEALTH CHECK ---
@@ -70,6 +72,7 @@ app.get('/api/health', (req, res) => {
   res.status(200).json({
     success: true,
     status: 'UP',
+    port: PORT,
     timestamp: new Date().toISOString()
   });
 });
@@ -80,19 +83,20 @@ app.use('/api/certificates', certificateRoutes);
 
 // --- 404 (SEMPRE DEPOIS DAS ROTAS) ---
 app.use((req, res) => {
-  console.warn(`[404] ${req.method} ${req.originalUrl}`);
+  console.warn(`[404] ${req.method} ${req.originalUrl} from ${req.ip}`);
   res.status(404).json({
     success: false,
-    error: 'Rota não encontrada.'
+    error: 'Rota não encontrada.',
+    requested: req.originalUrl
   });
 });
 
 // --- ERROR HANDLER ---
 app.use((err, req, res, next) => {
-  console.error('[Erro]', err.message);
-
+  console.error('[ERRO]', err.message, err.stack);
+  
   const isDev = process.env.NODE_ENV === 'development';
-
+  
   res.status(err.status || 500).json({
     success: false,
     error: isDev ? err.message : 'Erro interno do servidor.',
@@ -100,22 +104,39 @@ app.use((err, req, res, next) => {
   });
 });
 
-// --- START SERVER ---
+// ========================================
+//  START SERVER - CORRIGIDO RAILWAY
+// ========================================
 async function startServer() {
   try {
+    // Teste DB (não trava server)
     await db.query('SELECT NOW()');
-    console.log('✅ [Database] Conectado');
-
-    app.listen(PORT, '0.0.0.0', () => {
-      console.log(`🚀 Servidor rodando na porta ${PORT}`);
-    });
-
+    console.log(' [Database] Conectado PostgreSQL');
   } catch (error) {
-    console.error('❌ Erro ao conectar no banco:', error.message);
-    process.exit(1);
+    console.warn(' [Database] Sem conexão inicial, continua:', error.message);
   }
+  
+  // SERVER SEMPRE INICIA - BIND 0.0.0.0 OBRIGATÓRIO RAILWAY
+  const server = app.listen(PORT, '0.0.0.0', () => {
+    console.log(` Servidor rodando em 0.0.0.0:${PORT}`);
+    console.log(` Root: http://localhost:${PORT}/`);
+    console.log(` Health: http://localhost:${PORT}/api/health`);
+  });
+  
+  // Graceful shutdown (Railway)
+  process.on('SIGTERM', () => {
+    console.log(' SIGTERM - Fechando graciosamente');
+    server.close(() => {
+      console.log(' Server fechado');
+      process.exit(0);
+    });
+  });
+  
+  process.on('SIGINT', () => {
+    console.log(' SIGINT - Fechando');
+    server.close(() => process.exit(0));
+  });
 }
 
+console.log(' Iniciando API Certificados Digitais...');
 startServer();
-
-module.exports = app;
