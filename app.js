@@ -7,96 +7,111 @@ const path = require('path');
 const rateLimit = require('express-rate-limit');
 const db = require('./src/database/db');
 
-// Importação de rotas
+// Rotas
 const authRoutes = require('./src/routes/authRoutes');
 const certificateRoutes = require('./src/routes/certificateRoutes');
 
-// Inicialização do app Express
 const app = express();
+
+// 🔥 PORTA (Railway usa process.env.PORT automaticamente)
 const PORT = process.env.PORT || 8080;
 
-// --- Middlewares Globais ---
+// 🔥 IMPORTANTE PRA RAILWAY (proxy)
+app.set('trust proxy', 1);
+
+// --- MIDDLEWARES GLOBAIS ---
 app.use(cors());
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
-// Arquivos estáticos (PDFs)
+// --- ARQUIVOS ESTÁTICOS ---
 app.use('/certificates', express.static(path.join(__dirname, 'src/certificates')));
 
-// --- Middleware de Rate Limiting ---
+// --- RATE LIMIT (somente /api) ---
 const limiter = rateLimit({
-  windowMs: 15 * 60 * 1000,
+  windowMs: 15 * 60 * 1000, // 15 minutos
   max: 100,
-  message: 'Muitas requisições a partir deste IP, tente novamente mais tarde.',
   standardHeaders: true,
   legacyHeaders: false,
-  handler: (req, res) => {
-    console.warn(`[RateLimit] Limite atingido para IP: ${req.ip}`);
-    res.status(429).json({ 
-      success: false, 
-      error: 'Muitas requisições, tente novamente mais tarde.' 
-    });
-  }
 });
-app.use('/api/', limiter);
 
-// --- Logs de Requisições ---
+app.use('/api', limiter);
+
+// --- LOGS ---
 app.use((req, res, next) => {
-  console.log(`[${new Date().toISOString()}] ${req.method} ${req.originalUrl} - IP: ${req.ip}`);
+  console.log(
+    `[${new Date().toISOString()}] ${req.method} ${req.originalUrl} - IP: ${req.ip}`
+  );
   next();
 });
 
-// --- Rotas da API ---
+// ==========================
+// 🔥 ROTA RAIZ (ESSENCIAL)
+// ==========================
+app.get('/', (req, res) => {
+  res.status(200).json({
+    success: true,
+    message: '🚀 API Certificados Digitais ONLINE',
+    docs: {
+      health: '/api/health',
+      auth: '/api/auth',
+      certificates: '/api/certificates'
+    }
+  });
+});
+
+// 🔥 TESTE RÁPIDO
+app.get('/teste', (req, res) => {
+  res.send('🚀 API ONLINE');
+});
+
+// --- HEALTH CHECK ---
+app.get('/api/health', (req, res) => {
+  res.status(200).json({
+    success: true,
+    status: 'UP',
+    timestamp: new Date().toISOString()
+  });
+});
+
+// --- ROTAS PRINCIPAIS ---
 app.use('/api/auth', authRoutes);
 app.use('/api/certificates', certificateRoutes);
 
-// --- Health Check ---
-app.get('/api/health', (req, res) => {
-  res.status(200).json({ 
-    success: true, 
-    status: 'UP', 
-    timestamp: new Date().toISOString() 
-  });
-});
-
-// --- Rota 404 ---
+// --- 404 (SEMPRE DEPOIS DAS ROTAS) ---
 app.use((req, res) => {
-  console.warn(`[404] Rota não encontrada: ${req.method} ${req.originalUrl}`);
-  res.status(404).json({ 
-    success: false, 
-    error: 'Rota não encontrada.' 
+  console.warn(`[404] ${req.method} ${req.originalUrl}`);
+  res.status(404).json({
+    success: false,
+    error: 'Rota não encontrada.'
   });
 });
 
-// --- Middleware de Erros ---
+// --- ERROR HANDLER ---
 app.use((err, req, res, next) => {
-  console.error('[Erro] Ocorreu um erro:', err.message);
-  
-  const isDevelopment = process.env.NODE_ENV === 'development';
-  
+  console.error('[Erro]', err.message);
+
+  const isDev = process.env.NODE_ENV === 'development';
+
   res.status(err.status || 500).json({
     success: false,
-    error: isDevelopment ? err.message : 'Erro interno do servidor.',
-    ...(isDevelopment && { stack: err.stack })
+    error: isDev ? err.message : 'Erro interno do servidor.',
+    ...(isDev && { stack: err.stack })
   });
 });
 
-// --- Inicialização do Servidor ---
+// --- START SERVER ---
 async function startServer() {
   try {
-    // Testar conexão com banco
     await db.query('SELECT NOW()');
-    console.log('✅ [Database] Conexão estabelecida com sucesso');
-    
-    // Iniciar servidor
-    app.listen(PORT, () => {
-      console.log(`Servidor rodando na porta ${PORT}`);
-      console.log(` Acesse a API em: http://localhost:${PORT}`);
-      console.log(` Health Check: http://localhost:${PORT}/api/health`);
+    console.log('✅ [Database] Conectado');
+
+    app.listen(PORT, '0.0.0.0', () => {
+      console.log(`🚀 Servidor rodando na porta ${PORT}`);
     });
+
   } catch (error) {
-    console.error('❌ [Database] Falha ao conectar:', error.message);
-    console.error('❌ Verifique se o DATABASE_URL está configurado no .env');
+    console.error('❌ Erro ao conectar no banco:', error.message);
     process.exit(1);
   }
 }
