@@ -10,14 +10,20 @@ yarn.lock
 .env.test.local
 .env.production.local
 
+# Arquivos gerados de PDF
+certificates/
+src/certificates/
+public/certificates/
+*.pdf
+
 # Logs e arquivos gerados
 *.log
 logs/
 dist/
 build/
-public/certificates/
+
+# Uploads
 uploads/
-src/certificates/
 
 # Configurações de editor
 .vscode/

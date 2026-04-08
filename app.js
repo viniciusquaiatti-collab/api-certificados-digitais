@@ -1,44 +1,46 @@
-require('dotenv').config(); // Sempre no topo para carregar as variáveis de ambiente
+// app.js
+require('dotenv').config();
+
 const express = require('express');
 const cors = require('cors');
 const path = require('path');
 const rateLimit = require('express-rate-limit');
+const db = require('./src/database/db');
 
 // Importação de rotas
 const authRoutes = require('./src/routes/authRoutes');
 const certificateRoutes = require('./src/routes/certificateRoutes');
-const adminRoutes = require('./src/routes/adminRoutes');
-
-// Importação do middleware de autenticação
-const authMiddleware = require('./src/middlewares/authMiddleware');
 
 // Inicialização do app Express
 const app = express();
 const PORT = process.env.PORT || 8080;
 
 // --- Middlewares Globais ---
-app.use(cors()); // Habilita o CORS para todas as rotas
-app.use(express.json()); // Middleware para fazer o parsing de corpo de requisições JSON
-app.use(express.urlencoded({ extended: true })); // Middleware para fazer o parsing de dados de formulário
+app.use(cors());
+app.use(express.json());
+app.use(express.urlencoded({ extended: true }));
 
-// Middleware para servir arquivos estáticos (como os PDFs gerados)
-app.use('/certificates', express.static(path.join(__dirname, 'certificates')));
+// Arquivos estáticos (PDFs)
+app.use('/certificates', express.static(path.join(__dirname, 'src/certificates')));
 
-// --- Middleware de Rate Limiting (Segurança) ---
+// --- Middleware de Rate Limiting ---
 const limiter = rateLimit({
-  windowMs: 15 * 60 * 1000, // 15 minutos
-  max: 100, // limite de 100 requisições por IP a cada 15 minutos
+  windowMs: 15 * 60 * 1000,
+  max: 100,
   message: 'Muitas requisições a partir deste IP, tente novamente mais tarde.',
-  standardHeaders: true, // Retorna os headers `RateLimit-*` na resposta
-  legacyHeaders: false, // Desabilita o header `X-RateLimit-*`
-  handler: (req, res) => { // Função customizada para quando o limite é atingido
-    console.warn(`[RateLimit] Limite de requisições atingido para o IP: ${req.ip}`);
-    res.status(429).json({ error: 'Muitas requisições a partir deste IP, tente novamente mais tarde.' });
+  standardHeaders: true,
+  legacyHeaders: false,
+  handler: (req, res) => {
+    console.warn(`[RateLimit] Limite atingido para IP: ${req.ip}`);
+    res.status(429).json({ 
+      success: false, 
+      error: 'Muitas requisições, tente novamente mais tarde.' 
+    });
   }
 });
-app.use('/api/', limiter); // Aplica o rate limiting apenas às rotas da API
+app.use('/api/', limiter);
 
-// --- Logs de Requisições (Middleware Simples) ---
+// --- Logs de Requisições ---
 app.use((req, res, next) => {
   console.log(`[${new Date().toISOString()}] ${req.method} ${req.originalUrl} - IP: ${req.ip}`);
   next();
@@ -47,39 +49,58 @@ app.use((req, res, next) => {
 // --- Rotas da API ---
 app.use('/api/auth', authRoutes);
 app.use('/api/certificates', certificateRoutes);
-app.use('/api/admin', adminRoutes);
 
-// --- Rota de Health Check (Importante para monitoramento) ---
+// --- Health Check ---
 app.get('/api/health', (req, res) => {
-  res.status(200).json({ status: 'UP', timestamp: new Date().toISOString() });
+  res.status(200).json({ 
+    success: true, 
+    status: 'UP', 
+    timestamp: new Date().toISOString() 
+  });
 });
 
-// --- Middleware para Rotas Não Encontradas (404) ---
-app.use((req, res, next) => {
+// --- Rota 404 ---
+app.use((req, res) => {
   console.warn(`[404] Rota não encontrada: ${req.method} ${req.originalUrl}`);
-  res.status(404).json({ error: 'Rota não encontrada.' });
+  res.status(404).json({ 
+    success: false, 
+    error: 'Rota não encontrada.' 
+  });
 });
 
-// --- Middleware Central de Tratamento de Erros (Deve ser o último middleware) ---
+// --- Middleware de Erros ---
 app.use((err, req, res, next) => {
-  console.error('[Erro Geral] Ocorreu um erro não tratado:', err.message);
-  console.error('[Erro Geral] Stack trace:', err.stack);
-
-  // Em produção, você não deve expor o stack trace completo
+  console.error('[Erro] Ocorreu um erro:', err.message);
+  
   const isDevelopment = process.env.NODE_ENV === 'development';
   
   res.status(err.status || 500).json({
+    success: false,
     error: isDevelopment ? err.message : 'Erro interno do servidor.',
-    ...(isDevelopment && { stack: err.stack }) // Inclui o stack trace apenas em desenvolvimento
+    ...(isDevelopment && { stack: err.stack })
   });
 });
 
 // --- Inicialização do Servidor ---
-app.listen(PORT, () => {
-  console.log(`Servidor rodando na porta ${PORT}`);
-  console.log(` Acesse a API em: http://localhost:${PORT}`);
-  console.log(` Health Check: http://localhost:${PORT}/api/health`);
-});
+async function startServer() {
+  try {
+    // Testar conexão com banco
+    await db.query('SELECT NOW()');
+    console.log('✅ [Database] Conexão estabelecida com sucesso');
+    
+    // Iniciar servidor
+    app.listen(PORT, () => {
+      console.log(`Servidor rodando na porta ${PORT}`);
+      console.log(` Acesse a API em: http://localhost:${PORT}`);
+      console.log(` Health Check: http://localhost:${PORT}/api/health`);
+    });
+  } catch (error) {
+    console.error('❌ [Database] Falha ao conectar:', error.message);
+    console.error('❌ Verifique se o DATABASE_URL está configurado no .env');
+    process.exit(1);
+  }
+}
+
+startServer();
 
 module.exports = app;
-

@@ -1,102 +1,141 @@
-const db = require('../database/db');
+// src/models/Certificate.js
+const { pool } = require('../database/db');
 
-class Certificate {
-  /**
-   * Cria um novo certificado no banco de dados.
-   * @param {object} certificateData - Dados do certificado.
-   * @returns {Promise<number>} O ID do certificado recém-criado.
-   */
-  static async create(certificateData) {
-    console.log('--- [Certificate.create] Iniciando criação do certificado ---');
-    console.log('Dados recebidos:', certificateData);
+console.log('--- [Certificate] Iniciando modelo de certificados ---');
 
-    // Desestrutura os dados, garantindo que campos undefined se tornem null
-    const {
-      usuario_id,
-      nome_participante,
-      nome_curso,
-      carga_horaria,
-      data_emissao,
-      codigo_verificacao,
-      arquivo_path = null // Define um valor padrão null se não for fornecido
-    } = certificateData;
-
-    const [result] = await db.execute(
-      `INSERT INTO certificados 
-        (usuario_id, nome_participante, nome_curso, carga_horaria, data_emissao, codigo_verificacao, arquivo_path) 
-       VALUES (?, ?, ?, ?, ?, ?, ?)`,
-      [
-        usuario_id,
-        nome_participante,
-        nome_curso,
-        carga_horaria,
-        data_emissao,
-        codigo_verificacao,
-        arquivo_path // Usa null se arquivo_path for undefined
-      ]
+/**
+ * Criar certificado
+ */
+async function create(data) {
+  const { usuario_id, nome_participante, cpf, cpf_parcial, nome_curso, carga_horaria, data_emissao, codigo_verificacao, hash } = data;
+  
+  try {
+    const result = await pool.query(
+      `INSERT INTO certificates 
+      (usuario_id, nome_participante, cpf, cpf_parcial, nome_curso, carga_horaria, data_emissao, codigo_verificacao, hash, verificacoes_count, criado_em)
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 0, NOW())
+      RETURNING id`,
+      [usuario_id, nome_participante, cpf, cpf_parcial, nome_curso, carga_horaria, data_emissao, codigo_verificacao, hash]
     );
-
-    console.log(`✅ [Certificate.create] Certificado inserido com ID: ${result.insertId}`);
-    return result.insertId;
-  }
-
-  /**
-   * Encontra um certificado pelo código de verificação.
-   * @param {string} code - O código de verificação.
-   * @returns {Promise<object|null>} O objeto do certificado ou null se não encontrado.
-   */
-  static async findByVerificationCode(code) {
-    console.log(`--- [Certificate.findByVerificationCode] Buscando certificado com código: ${code} ---`);
-    const [rows] = await db.execute('SELECT * FROM certificados WHERE codigo_verificacao = ?', [code]);
-    return rows.length > 0 ? rows[0] : null;
-  }
-
-  /**
-   * Atualiza o caminho do arquivo de um certificado.
-   * @param {number} certificateId - O ID do certificado.
-   * @param {string} filePath - O novo caminho do arquivo.
-   */
-  static async updateFilePath(certificateId, filePath) {
-    console.log(`--- [Certificate.updateFilePath] Atualizando caminho do arquivo para o certificado ID: ${certificateId} ---`);
-    await db.execute('UPDATE certificados SET arquivo_path = ? WHERE id = ?', [filePath, certificateId]);
-  }
-
-  /**
-   * Atualiza o certificado após uma verificação (anti-fraude).
-   * @param {number} certificateId - O ID do certificado.
-   * @param {string} newCode - O novo código de verificação.
-   * @param {string} ip - O IP da verificação.
-   * @param {string} userAgent - O User-Agent da verificação.
-   */
-  static async updateAfterVerification(certificateId, newCode, ip, userAgent) {
-    console.log(`--- [Certificate.updateAfterVerification] Atualizando certificado ID: ${certificateId} ---`);
-    await db.execute(
-      `UPDATE certificados 
-       SET codigo_verificacao = ?, 
-           verificacoes_count = verificacoes_count + 1, 
-           ultima_verificacao = NOW(),
-           primeiro_ip_verificacao = IF(primeiro_ip_verificacao IS NULL, ?, primeiro_ip_verificacao),
-           primeiro_dispositivo = IF(primeiro_dispositivo IS NULL, ?, primeiro_dispositivo)
-       WHERE id = ?`,
-      [newCode, ip, userAgent, certificateId]
-    );
-  }
-
-  /**
-   * Adiciona um registro ao histórico de verificações.
-   * @param {number} certificateId - O ID do certificado.
-   * @param {string} oldCode - O código antigo.
-   * @param {string} newCode - O novo código.
-   * @param {string} ip - O IP da verificação.
-   * @param {string} userAgent - O User-Agent.
-   */
-  static async addVerificationHistory(certificateId, oldCode, newCode, ip, userAgent) {
-    console.log(`--- [Certificate.addVerificationHistory] Adicionando ao histórico do certificado ID: ${certificateId} ---`);
-    await db.execute(
-      'INSERT INTO historico_verificacoes (certificado_id, codigo_verificacao, novo_codigo_verificacao, ip_address, user_agent) VALUES (?, ?, ?, ?, ?)',
-      [certificateId, oldCode, newCode, ip, userAgent]
-    );
+    
+    console.log(`✅ [Certificate] Certificado criado: ID ${result.rows[0].id}`);
+    
+    return result.rows[0].id;
+  } catch (error) {
+    console.error('❌ [Certificate] Erro ao criar certificado:', error.message);
+    throw error;
   }
 }
 
-module.exports = Certificate;
+/**
+ * Buscar por código de verificação (PÚBLICO)
+ */
+async function findByVerificationCode(codigo) {
+  try {
+    const result = await pool.query(
+      `SELECT * FROM certificates WHERE codigo_verificacao = $1`,
+      [codigo]
+    );
+    
+    return result.rows[0];
+  } catch (error) {
+    console.error('❌ [Certificate] Erro ao buscar certificado:', error.message);
+    throw error;
+  }
+}
+
+/**
+ * Buscar por ID (AUTENTICADO)
+ */
+async function findById(id, usuario_id) {
+  try {
+    const result = await pool.query(
+      `SELECT * FROM certificates WHERE id = $1 AND usuario_id = $2`,
+      [id, usuario_id]
+    );
+    
+    return result.rows[0];
+  } catch (error) {
+    console.error('❌ [Certificate] Erro ao buscar certificado por ID:', error.message);
+    throw error;
+  }
+}
+
+/**
+ * Buscar por usuário (AUTENTICADO)
+ */
+async function findByUserId(usuario_id) {
+  try {
+    const result = await pool.query(
+      `SELECT id, nome_participante, cpf_parcial, nome_curso, carga_horaria, data_emissao, codigo_verificacao, verificacoes_count, ultima_verificacao, criado_em
+       FROM certificates 
+       WHERE usuario_id = $1 
+       ORDER BY criado_em DESC`,
+      [usuario_id]
+    );
+    
+    return result.rows;
+  } catch (error) {
+    console.error('❌ [Certificate] Erro ao buscar certificados do usuário:', error.message);
+    throw error;
+  }
+}
+
+/**
+ * Atualizar URL do PDF
+ */
+async function updateFilePath(id, pdf_path) {
+  try {
+    await pool.query(
+      'UPDATE certificates SET pdf_path = $1 WHERE id = $2',
+      [pdf_path, id]
+    );
+  } catch (error) {
+    console.error('❌ [Certificate] Erro ao atualizar PDF:', error.message);
+    throw error;
+  }
+}
+
+/**
+ * Incrementar contador de verificações
+ */
+async function incrementVerification(id) {
+  try {
+    await pool.query(
+      `UPDATE certificates 
+       SET verificacoes_count = verificacoes_count + 1, 
+           ultima_verificacao = NOW() 
+       WHERE id = $1`,
+      [id]
+    );
+  } catch (error) {
+    console.error('❌ [Certificate] Erro ao incrementar verificação:', error.message);
+  }
+}
+
+/**
+ * Adicionar histórico de verificação
+ */
+async function addVerificationHistory(data) {
+  const { certificate_id, codigo_verificacao, ip_address, user_agent } = data;
+  
+  try {
+    await pool.query(
+      `INSERT INTO verification_history (certificado_id, codigo_verificacao, ip_address, user_agent, data_verificacao)
+       VALUES ($1, $2, $3, $4, NOW())`,
+      [certificate_id, codigo_verificacao, ip_address, user_agent]
+    );
+  } catch (error) {
+    console.error('❌ [Certificate] Erro ao adicionar histórico:', error.message);
+  }
+}
+
+module.exports = {
+  create,
+  findByVerificationCode,
+  findById,
+  findByUserId,
+  updateFilePath,
+  incrementVerification,
+  addVerificationHistory
+};
