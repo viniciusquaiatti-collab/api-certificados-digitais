@@ -15,11 +15,11 @@ async function create({ email, senha_hash }) {
       [email, senha_hash]
     );
     
-    console.log(`✅ [User] Usuário criado: ${email} (ID: ${result.rows[0].id})`);
+    console.log(` [User] Usuário criado: ${email} (ID: ${result.rows[0].id})`);
     
     return result.rows[0];
   } catch (error) {
-    console.error('❌ [User] Erro ao criar usuário:', error.message);
+    console.error(' [User] Erro ao criar usuário:', error.message);
     throw error;
   }
 }
@@ -36,7 +36,7 @@ async function findByEmail(email) {
     
     return result.rows[0];
   } catch (error) {
-    console.error('❌ [User] Erro ao buscar usuário:', error.message);
+    console.error(' [User] Erro ao buscar usuário:', error.message);
     throw error;
   }
 }
@@ -53,7 +53,7 @@ async function findById(id) {
     
     return result.rows[0];
   } catch (error) {
-    console.error('❌ [User] Erro ao buscar usuário por ID:', error.message);
+    console.error(' [User] Erro ao buscar usuário por ID:', error.message);
     throw error;
   }
 }
@@ -68,7 +68,7 @@ async function updatePassword(id, senha_hash) {
       [senha_hash, id]
     );
   } catch (error) {
-    console.error('❌ [User] Erro ao atualizar senha:', error.message);
+    console.error(' [User] Erro ao atualizar senha:', error.message);
     throw error;
   }
 }
@@ -80,7 +80,7 @@ async function deleteById(id) {
   try {
     await pool.query('DELETE FROM users WHERE id = $1', [id]);
   } catch (error) {
-    console.error('❌ [User] Erro ao deletar usuário:', error.message);
+    console.error(' [User] Erro ao deletar usuário:', error.message);
     throw error;
   }
 }

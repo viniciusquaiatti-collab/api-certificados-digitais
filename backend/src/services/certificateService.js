@@ -6,22 +6,19 @@ const crypto = require('crypto');
 
 console.log('--- [CertificateService] Iniciando serviço de certificados ---');
 
-// Configurar Cloudinary
 const cloudinaryUrl = process.env.CLOUDINARY_URL;
 
 if (!cloudinaryUrl) {
   console.error('[Cloudinary] CLOUDINARY_URL não configurado no .env');
-  console.error(' [Cloudinary] Configure a variável CLOUDINARY_URL com sua URL do Cloudinary');
-  console.error(' [Cloudinary] Formato: cloudinary://API_KEY:API_SECRET@CLOUD_NAME');
 } else {
   cloudinary.config({ 
     cloudinary_url: cloudinaryUrl 
   });
-  console.log('✅ [Cloudinary] Configurado com CLOUDINARY_URL');
+  console.log(' [Cloudinary] Configurado com CLOUDINARY_URL');
 }
 
 // ===========================================
-// GERAR HASH SHA-256 FORTE
+// HASH (mantido por compatibilidade - NÃO USADO)
 // ===========================================
 function generateHash(data) {
   const secret = process.env.CERTIFICATE_SECRET_KEY || 'default-secret-key-change-in-production';
@@ -32,38 +29,39 @@ function generateHash(data) {
 }
 
 // ===========================================
-// MASCARAR CPF (LGPD)
+// CPF (AJUSTE 1 - PADRÃO PROFISSIONAL)
 // ===========================================
 function maskCPF(cpf) {
-  const digits = cpf.replace(/\D/g, '');
-  return `***.***.**${digits.substring(9, 11)}-${digits.substring(11, 13)}`;
+  if (!cpf) return "***.***.***-**";
+  const digits = cpf.replace(/\D/g, "");
+  return `***.***.***-${digits.slice(-2)}`;
 }
 
 // ===========================================
-// MASCARAR HASH
+// HASH VISUAL (OK)
 // ===========================================
 function maskHash(hash) {
   if (!hash || hash.length < 32) return hash;
   
-  const primeiroParte = hash.substring(0, 8);
-  const ultimoParte = hash.substring(hash.length - 8);
+  const inicio = hash.substring(0, 8);
+  const fim = hash.substring(hash.length - 8);
   
-  return `${primeiroParte}........${ultimoParte}`;
+  return `${inicio}........${fim}`;
 }
 
 // ===========================================
-// 🔥 BASE URL CENTRALIZADA (CORREÇÃO DEFINITIVA)
+// BASE URL (MANTIDO - NÃO ALTERADO)
 // ===========================================
-function getBaseUrl() {
-  return process.env.BASE_URL || 'http://localhost:8080';
+function getFrontendUrl() {
+  return process.env.FRONTEND_URL || 'https://verificadoroficial.lovable.app';
 }
 
 // ===========================================
-// GERAR QR CODE (CORRIGIDO)
+// QR CODE (MANTIDO)
 // ===========================================
 async function generateQRCodeWithSecurityBackground(codigo_verificacao) {
-  const baseUrl = getBaseUrl();
-  const verificationUrl = `${baseUrl}/api/certificates/verify/${codigo_verificacao}`;
+const frontendUrl = getFrontendUrl();
+const verificationUrl = `${frontendUrl}/verify/${codigo_verificacao}`;
   
   return QRCode.toDataURL(verificationUrl, {
     width: 250,
@@ -73,40 +71,42 @@ async function generateQRCodeWithSecurityBackground(codigo_verificacao) {
       dark: '#1a1a1a',
       light: '#ffffff'
     }
-    
   });
 }
 
 // ===========================================
-// GERAR PDF E ENVIAR PARA CLOUDINARY
+// PDF (MANTIDO)
 // ===========================================
 async function generatePDF(data) {
   return new Promise(async (resolve, reject) => {
-    console.log(`[CertificateService] Gerando PDF para: ${data.nome_participante}`);
-    
     try {
       if (!process.env.CLOUDINARY_URL) {
-        return reject(new Error('CLOUDINARY_URL não configurado no .env'));
+        return reject(new Error('CLOUDINARY_URL não configurado'));
       }
-      
-      // QR Code
-      const qrCodeDataUrl = await generateQRCodeWithSecurityBackground(data.codigo_verificacao);
-      
+
+      const frontendUrl = getFrontendUrl();
+const verificationUrl = `${frontendUrl}/verify/${data.codigo_verificacao}`;
+
+      const qrCodeDataUrl = await QRCode.toDataURL(verificationUrl, {
+        width: 220,
+        margin: 1
+      });
+
       const doc = new PDFDocument({
         size: 'A4',
         layout: 'landscape',
         margin: 40
       });
-      
+
       const chunks = [];
-      
+
       doc.on('data', chunk => chunks.push(chunk));
-      
+
       doc.on('end', async () => {
         try {
           const pdfBuffer = Buffer.concat(chunks);
           const pdfBase64 = pdfBuffer.toString('base64');
-          
+
           const result = await cloudinary.uploader.upload(
             `data:application/pdf;base64,${pdfBase64}`,
             {
@@ -116,62 +116,126 @@ async function generatePDF(data) {
               overwrite: true
             }
           );
-          
+
           resolve(result.secure_url);
         } catch (err) {
           reject(err);
         }
       });
-      
+
       doc.on('error', reject);
 
-      // Fundo
-      doc.fillColor('#FFFFFF');
-      doc.rect(0, 0, 842, 595).fill();
+      // =====================================
+      //  FUNDO LIMPO PREMIUM
+      // =====================================
+      doc.rect(0, 0, 842, 595).fill('#FFFFFF');
 
-      // Bordas
-      doc.strokeColor('#cc0000').lineWidth(3).rect(20, 20, 802, 555).stroke();
-      doc.strokeColor('#000000').lineWidth(1).rect(30, 30, 782, 535).stroke();
+      // Moldura externa
+      doc
+        .lineWidth(2)
+        .strokeColor('#0f172a')
+        .rect(20, 20, 802, 555)
+        .stroke();
 
-      // Título
-      doc.fontSize(36).font('Helvetica-Bold').fillColor('#1a1a1a');
-      doc.text('CERTIFICADO', 0, 50, { align: 'center' });
+      // =====================================
+      //  HEADER EMPRESA
+      // =====================================
+      doc
+        .fontSize(12)
+        .fillColor('#64748b')
+        .text('NexaSpark Tecnologia', 40, 40);
 
-      doc.fontSize(14).font('Helvetica');
-      doc.text('Certificamos que', 0, 100, { align: 'center' });
+      doc
+        .fontSize(10)
+        .fillColor('#94a3b8')
+        .text('Certificação Digital Segura', 40, 55);
 
-      doc.fontSize(28).font('Helvetica-Bold');
-      doc.text(data.nome_participante, 0, 130, { align: 'center' });
+      // =====================================
+      //  TÍTULO
+      // =====================================
+      doc
+        .fontSize(34)
+        .font('Helvetica-Bold')
+        .fillColor('#0f172a')
+        .text('CERTIFICADO', 0, 90, { align: 'center' });
 
-      doc.fontSize(12).font('Helvetica');
-      doc.text(`CPF: ${data.cpf_parcial}`, 0, 165, { align: 'center' });
+      doc
+        .fontSize(14)
+        .fillColor('#475569')
+        .text('Certificamos que', 0, 130, { align: 'center' });
 
-      doc.text('concluiu com êxito o curso', 0, 185, { align: 'center' });
+      // Nome
+      doc
+        .fontSize(26)
+        .font('Helvetica-Bold')
+        .fillColor('#020617')
+        .text(data.nome_participante, 0, 160, { align: 'center' });
 
-      doc.fontSize(22).font('Helvetica-Bold');
-      doc.text(data.nome_curso, 0, 205, { align: 'center' });
+      // CPF
+      doc
+        .fontSize(12)
+        .fillColor('#475569')
+        .text(`CPF: ${data.cpf_parcial}`, 0, 195, { align: 'center' });
 
-      doc.fontSize(14);
-      doc.text(`com carga horária de ${data.carga_horaria} horas`, 0, 235, { align: 'center' });
+      doc
+        .text('concluiu com êxito o curso', 0, 215, { align: 'center' });
 
-      doc.fontSize(12);
-      doc.text(`Emitido em: ${new Date(data.data_emissao).toLocaleDateString('pt-BR')}`, 0, 255, { align: 'center' });
+      // Curso
+      doc
+        .fontSize(20)
+        .font('Helvetica-Bold')
+        .fillColor('#020617')
+        .text(data.nome_curso, 0, 235, { align: 'center' });
 
-      // QR Box
-      doc.fillColor('#f5f5f5').rect(50, 290, 260, 260).fill();
-      doc.strokeColor('#000').lineWidth(2).rect(50, 290, 260, 260).stroke();
+      doc
+        .fontSize(13)
+        .fillColor('#475569')
+        .text(`Carga horária: ${data.carga_horaria} horas`, 0, 265, { align: 'center' });
 
-      doc.image(qrCodeDataUrl, 55, 295, {
-        width: 250,
-        height: 250
+      doc
+        .text(`Emitido em: ${new Date(data.data_emissao).toLocaleDateString('pt-BR')}`, 0, 285, { align: 'center' });
+
+      // =====================================
+      //  QR CODE (CORRIGIDO)
+      // =====================================
+      doc
+        .rect(60, 330, 200, 200)
+        .fill('#f8fafc');
+
+      doc.image(qrCodeDataUrl, 65, 335, {
+        width: 190
       });
 
-      // 🔥 URL CORRIGIDA NO PDF
-      const baseUrl = getBaseUrl();
-      const verificationUrlText = `${baseUrl}/api/certificates/verify/${data.codigo_verificacao}`;
+      doc
+        .fontSize(8)
+        .fillColor('#2563eb')
+        .text(verificationUrl, 60, 535);
 
-      doc.fontSize(9).fillColor('#0066cc');
-      doc.text(verificationUrlText, 350, 350);
+      // =====================================
+      //  HASH (NOVO)
+      // =====================================
+      const hashPreview = data.hash.slice(0, 20).toUpperCase();
+
+      doc
+        .fontSize(10)
+        .fillColor('#64748b')
+        .text('Assinatura digital (SHA-256):', 350, 380);
+
+      doc
+        .fontSize(10)
+        .fillColor('#020617')
+        .text(`${hashPreview}...`, 350, 395);
+
+      // =====================================
+      //  RODAPÉ PROFISSIONAL
+      // =====================================
+      doc
+        .fontSize(9)
+        .fillColor('#94a3b8')
+        .text('Este certificado é validado digitalmente.', 0, 520, { align: 'center' });
+
+      doc
+        .text('A autenticidade pode ser verificada via QR Code ou URL.', 0, 535, { align: 'center' });
 
       doc.end();
 

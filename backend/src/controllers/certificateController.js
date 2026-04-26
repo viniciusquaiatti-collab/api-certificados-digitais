@@ -20,7 +20,6 @@ class CertificateController {
       
       console.log(`[CertificateController] Usuário ${usuario_id} criando certificado para: ${nome_participante}`);
       
-      // Verificar se CLOUDINARY_URL está configurado
       if (!process.env.CLOUDINARY_URL) {
         console.error('[CertificateController] CLOUDINARY_URL não configurado');
         return res.status(500).json({
@@ -29,23 +28,21 @@ class CertificateController {
         });
       }
       
-      // Gerar código de verificação permanente (16 caracteres)
+      // Código único
       const codigo_verificacao = crypto.randomBytes(8).toString('hex').toUpperCase();
       
-      // Gerar hash SHA-256 forte
-      const hash = CertificateService.generateHash({
-        nome_participante,
-        cpf,
-        nome_curso,
-        carga_horaria,
-        data_emissao,
-        codigo_verificacao
-      });
+      //  HASH PROFISSIONAL (AJUSTE 2)
+      const hash = crypto
+        .createHash('sha256')
+        .update(
+          `${nome_participante}|${cpf}|${nome_curso}|${carga_horaria}|${data_emissao}|${codigo_verificacao}`
+        )
+        .digest('hex');
       
-      // Mascara CPF para LGPD
-      const cpf_parcial = CertificateService.maskCPF(cpf);
+      //  CPF MASCARADO CORRETO (AJUSTE 1)
+      const digits = cpf.replace(/\D/g, "");
+      const cpf_parcial = `***.***.***-${digits.slice(-2)}`;
       
-      // Criar certificado no banco
       const certificateId = await Certificate.create({
         usuario_id,
         nome_participante,
@@ -60,7 +57,6 @@ class CertificateController {
       
       console.log(`[CertificateController] Certificado criado no banco: ID ${certificateId}`);
       
-      // Gerar PDF com QRCode EMBEDDED
       let pdfUrl = null;
       
       try {
@@ -74,16 +70,13 @@ class CertificateController {
           hash
         });
         
-        // Atualizar URL do PDF
         await Certificate.updateFilePath(certificateId, pdfUrl);
         
         console.log(`[CertificateController] PDF atualizado: ${pdfUrl}`);
       } catch (pdfError) {
         console.error('[CertificateController] Erro ao gerar PDF:', pdfError.message);
-        // Continua mesmo sem PDF - o certificado foi criado no banco
       }
       
-      // Registrar auditoria
       await AuditLog.create({
         usuario_id,
         acao: 'CREATE_CERTIFICATE',
@@ -92,7 +85,7 @@ class CertificateController {
         user_agent: req.get('User-Agent')
       });
       
-      console.log(`[CertificateController] ✅ Certificado criado: ID ${certificateId}`);
+      console.log(`[CertificateController]  Certificado criado: ID ${certificateId}`);
       
       res.status(201).json({
         success: true,
@@ -114,7 +107,7 @@ class CertificateController {
   }
   
   // ===========================================
-  // VERIFICAR CERTIFICADO (PÚBLICO - COM TIMESTAMP)
+  // VERIFICAR CERTIFICADO (PÚBLICO)
   // ===========================================
   static async verifyCertificate(req, res) {
     console.log('--- [CertificateController.verifyCertificate] Iniciando verificação ---');
@@ -124,7 +117,6 @@ class CertificateController {
       
       console.log(`[CertificateController] Verificando código: ${codigo}`);
       
-      // Buscar certificado pelo código
       const certificate = await Certificate.findByVerificationCode(codigo);
       
       if (!certificate) {
@@ -135,10 +127,8 @@ class CertificateController {
         });
       }
       
-      // Incrementar contador de verificações
       await Certificate.incrementVerification(certificate.id);
       
-      // Registrar histórico de verificação
       await Certificate.addVerificationHistory({
         certificate_id: certificate.id,
         codigo_verificacao: codigo,
@@ -146,7 +136,6 @@ class CertificateController {
         user_agent: req.get('User-Agent')
       });
       
-      // Registrar auditoria
       await AuditLog.create({
         usuario_id: null,
         acao: 'VERIFY_CERTIFICATE',
@@ -155,31 +144,30 @@ class CertificateController {
         user_agent: req.get('User-Agent')
       });
       
-      console.log(`[CertificateController] ✅ Certificado verificado: ${codigo}`);
+      console.log(`[CertificateController]  Certificado verificado: ${codigo}`);
       
-      // Resposta com timestamp da verificação
       res.json({
         success: true,
         data: {
-          // Dados do participante (LGPD - CPF mascarado)
           participante: {
             nome: certificate.nome_participante.toUpperCase(),
             cpf: certificate.cpf_parcial
           },
-          // Dados do curso
           curso: {
             nome: certificate.nome_curso,
             carga_horaria: certificate.carga_horaria,
             data_emissao: certificate.data_emissao
           },
-          // Verificação
           verificacao: {
             codigo: certificate.codigo_verificacao,
             hash: certificate.hash,
+            
+            //  AJUSTE 3 (HASH PREVIEW)
+            hash_preview: certificate.hash.slice(0, 12).toUpperCase(),
+            
             total_verificacoes: certificate.verificacoes_count + 1,
             hora_verificacao: new Date().toISOString()
           },
-          // PDF
           pdf_url: certificate.pdf_path
         }
       });
@@ -193,15 +181,9 @@ class CertificateController {
     }
   }
   
-  // ===========================================
-  // LISTAR CERTIFICADOS DO USUÁRIO (AUTENTICADO)
-  // ===========================================
   static async getUserCertificates(req, res) {
-    console.log('--- [CertificateController.getUserCertificates] Listando certificados ---');
-    
     try {
       const usuario_id = req.user.id;
-      
       const certificates = await Certificate.findByUserId(usuario_id);
       
       res.json({
@@ -209,7 +191,6 @@ class CertificateController {
         data: certificates
       });
     } catch (error) {
-      console.error('[CertificateController.getUserCertificates] Erro:', error.message);
       res.status(500).json({
         success: false,
         error: 'Erro ao listar certificados'
@@ -217,12 +198,7 @@ class CertificateController {
     }
   }
   
-  // ===========================================
-  // BUSCAR CERTIFICADO POR ID (AUTENTICADO)
-  // ===========================================
   static async getCertificateById(req, res) {
-    console.log('--- [CertificateController.getCertificateById] Buscando certificado ---');
-    
     try {
       const { id } = req.params;
       const usuario_id = req.user.id;
@@ -241,7 +217,6 @@ class CertificateController {
         data: certificate
       });
     } catch (error) {
-      console.error('[CertificateController.getCertificateById] Erro:', error.message);
       res.status(500).json({
         success: false,
         error: 'Erro ao buscar certificado'

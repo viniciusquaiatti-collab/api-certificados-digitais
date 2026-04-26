@@ -17,11 +17,11 @@ async function create(data) {
       [usuario_id || null, acao, detalhe, ip_address || null, user_agent || null]
     );
     
-    console.log(`✅ [AuditLog] Ação registrada: ${acao} (ID: ${result.rows[0].id})`);
+    console.log(` [AuditLog] Ação registrada: ${acao} (ID: ${result.rows[0].id})`);
     
     return result.rows[0].id;
   } catch (error) {
-    console.error('❌ [AuditLog] Erro ao registrar ação:', error.message);
+    console.error(' [AuditLog] Erro ao registrar ação:', error.message);
     return null;
   }
 }
@@ -41,7 +41,7 @@ async function findByUserId(usuario_id, limit = 100) {
     
     return result.rows;
   } catch (error) {
-    console.error('❌ [AuditLog] Erro ao buscar logs:', error.message);
+    console.error(' [AuditLog] Erro ao buscar logs:', error.message);
     return [];
   }
 }
@@ -61,7 +61,7 @@ async function findByAction(acao, limit = 100) {
     
     return result.rows;
   } catch (error) {
-    console.error('❌ [AuditLog] Erro ao buscar logs:', error.message);
+    console.error(' [AuditLog] Erro ao buscar logs:', error.message);
     return [];
   }
 }
@@ -80,7 +80,7 @@ async function findAll(limit = 100) {
     
     return result.rows;
   } catch (error) {
-    console.error('❌ [AuditLog] Erro ao buscar logs:', error.message);
+    console.error(' [AuditLog] Erro ao buscar logs:', error.message);
     return [];
   }
 }

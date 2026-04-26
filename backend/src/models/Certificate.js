@@ -18,11 +18,11 @@ async function create(data) {
       [usuario_id, nome_participante, cpf, cpf_parcial, nome_curso, carga_horaria, data_emissao, codigo_verificacao, hash]
     );
     
-    console.log(`✅ [Certificate] Certificado criado: ID ${result.rows[0].id}`);
+    console.log(` [Certificate] Certificado criado: ID ${result.rows[0].id}`);
     
     return result.rows[0].id;
   } catch (error) {
-    console.error('❌ [Certificate] Erro ao criar certificado:', error.message);
+    console.error(' [Certificate] Erro ao criar certificado:', error.message);
     throw error;
   }
 }
@@ -39,7 +39,7 @@ async function findByVerificationCode(codigo) {
     
     return result.rows[0];
   } catch (error) {
-    console.error('❌ [Certificate] Erro ao buscar certificado:', error.message);
+    console.error(' [Certificate] Erro ao buscar certificado:', error.message);
     throw error;
   }
 }
@@ -56,7 +56,7 @@ async function findById(id, usuario_id) {
     
     return result.rows[0];
   } catch (error) {
-    console.error('❌ [Certificate] Erro ao buscar certificado por ID:', error.message);
+    console.error(' [Certificate] Erro ao buscar certificado por ID:', error.message);
     throw error;
   }
 }
@@ -76,7 +76,7 @@ async function findByUserId(usuario_id) {
     
     return result.rows;
   } catch (error) {
-    console.error('❌ [Certificate] Erro ao buscar certificados do usuário:', error.message);
+    console.error(' [Certificate] Erro ao buscar certificados do usuário:', error.message);
     throw error;
   }
 }
@@ -91,7 +91,7 @@ async function updateFilePath(id, pdf_path) {
       [pdf_path, id]
     );
   } catch (error) {
-    console.error('❌ [Certificate] Erro ao atualizar PDF:', error.message);
+    console.error(' [Certificate] Erro ao atualizar PDF:', error.message);
     throw error;
   }
 }
@@ -109,7 +109,7 @@ async function incrementVerification(id) {
       [id]
     );
   } catch (error) {
-    console.error('❌ [Certificate] Erro ao incrementar verificação:', error.message);
+    console.error(' [Certificate] Erro ao incrementar verificação:', error.message);
   }
 }
 
@@ -126,7 +126,7 @@ async function addVerificationHistory(data) {
       [certificate_id, codigo_verificacao, ip_address, user_agent]
     );
   } catch (error) {
-    console.error('❌ [Certificate] Erro ao adicionar histórico:', error.message);
+    console.error(' [Certificate] Erro ao adicionar histórico:', error.message);
   }
 }
 
