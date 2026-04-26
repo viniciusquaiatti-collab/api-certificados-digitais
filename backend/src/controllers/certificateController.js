@@ -4,7 +4,7 @@ const CertificateService = require('../services/certificateService');
 const AuditLog = require('../models/AuditLog');
 const crypto = require('crypto');
 
-console.log('--- [CertificateController] Iniciando controller de certificados ---');
+console.log('🔥 [CertificateController] CARREGADO 🔥');
 
 class CertificateController {
   

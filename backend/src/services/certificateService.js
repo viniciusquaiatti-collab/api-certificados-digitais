@@ -62,6 +62,7 @@ function getFrontendUrl() {
 async function generateQRCodeWithSecurityBackground(codigo_verificacao) {
 const frontendUrl = getFrontendUrl();
 const verificationUrl = `${frontendUrl}/verify/${codigo_verificacao}`;
+console.log('🌐 URL DO QR:', verificationUrl);
   
   return QRCode.toDataURL(verificationUrl, {
     width: 250,
@@ -112,7 +113,7 @@ const verificationUrl = `${frontendUrl}/verify/${data.codigo_verificacao}`;
             {
               resource_type: 'raw',
               folder: 'certificados',
-              public_id: `certificado_${data.codigo_verificacao}`,
+              public_id: `certificado_${data.codigo_verificacao}_${Date.now()}`,
               overwrite: true
             }
           );
