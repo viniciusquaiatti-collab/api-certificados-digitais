@@ -4,19 +4,40 @@ import { motion } from "framer-motion";
 
 function VerifyCertificate() {
   const { codigo } = useParams();
+
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
   const [showScan, setShowScan] = useState(true);
+  const [error, setError] = useState(false);
 
   useEffect(() => {
-    fetch(`https://api-certificados-digitais-production.up.railway.app/api/certificates/verify/${codigo}`)
-      .then(res => res.json())
-      .then(res => setData(res.data))
-      .finally(() => setLoading(false));
+    if (!codigo) return;
 
-    setTimeout(() => setShowScan(false), 1800);
+    let timer;
+
+    fetch(`https://api-certificados-digitais-production.up.railway.app/api/certificates/verify/${codigo}`)
+      .then(res => {
+        if (!res.ok) throw new Error("Erro na API");
+        return res.json();
+      })
+      .then(res => {
+        setData(res.data);
+      })
+      .catch(() => {
+        setError(true);
+      })
+      .finally(() => {
+        setLoading(false);
+      });
+
+    timer = setTimeout(() => setShowScan(false), 1800);
+
+    return () => clearTimeout(timer);
   }, [codigo]);
 
+  /* =========================
+     LOADING STATE (UX PREMIUM)
+  ========================== */
   if (loading) {
     return (
       <div className="min-h-screen flex items-center justify-center bg-[#020617]">
@@ -27,10 +48,38 @@ function VerifyCertificate() {
     );
   }
 
-  const participante = data?.participante;
-  const curso = data?.curso;
-  const verificacao = data?.verificacao;
+  /* =========================
+     ERROR STATE
+  ========================== */
+  if (error || !data) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-[#020617]">
+        <p className="text-red-400 text-sm">
+          Certificado não encontrado ou inválido
+        </p>
+      </div>
+    );
+  }
 
+  /* =========================
+     DATA EXTRACTION (SAFE)
+  ========================== */
+  const participante = data?.participante || {};
+  const curso = data?.curso || {};
+  const verificacao = data?.verificacao || {};
+
+  /* =========================
+     MASK CPF (SEGURANÇA)
+  ========================== */
+  const maskCpf = (cpf) => {
+    if (!cpf) return "***.***.***-**";
+    const digits = cpf.replace(/\D/g, "");
+    return `***.***.***-${digits.slice(-2)}`;
+  };
+
+  /* =========================
+     FORMAT DATE
+  ========================== */
   const dataFormatada = verificacao?.hora_verificacao
     ? new Date(verificacao.hora_verificacao).toLocaleString("pt-BR", {
         timeZone: "America/Sao_Paulo",
@@ -85,7 +134,7 @@ function VerifyCertificate() {
             className="text-6xl mb-4 relative"
           >
             <span className="drop-shadow-[0_0_30px_rgba(34,197,94,0.9)]">
-              
+              ✅
             </span>
 
             <div className="absolute inset-0 bg-green-400/20 blur-xl rounded-full animate-ping" />
@@ -106,17 +155,21 @@ function VerifyCertificate() {
             Titular
           </p>
           <h2 className="text-xl text-white font-semibold mt-1">
-            {participante?.nome}
+            {participante?.nome || "-"}
           </h2>
         </div>
 
         {/* INFO BOX */}
         <div className="bg-white/5 rounded-2xl p-5 space-y-4">
 
+          <Info label="CPF" value={maskCpf(participante?.cpf)} />
           <Info label="Curso" value={curso?.nome} />
 
           <div className="grid grid-cols-2 gap-4">
-            <InfoSmall label="Carga horária" value={`${curso?.carga_horaria}h`} />
+            <InfoSmall
+              label="Carga horária"
+              value={curso?.carga_horaria ? `${curso.carga_horaria}h` : "-"}
+            />
             <InfoSmall label="Validação" value={dataFormatada} />
           </div>
 
@@ -125,7 +178,7 @@ function VerifyCertificate() {
         {/* FOOTER TRUST */}
         <div className="mt-6 text-center">
           <p className="text-[11px] text-slate-500 tracking-wide">
-            Verificação realizada em tempo real • Brasil
+            Verificação em tempo real • Brasil
           </p>
         </div>
 
