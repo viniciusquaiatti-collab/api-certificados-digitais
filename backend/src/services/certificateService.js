@@ -9,7 +9,6 @@ const fs = require('fs');
 console.log('--- [CertificateService] Iniciando serviço de certificados ---');
 
 
-
 // ===========================================
 // CLOUDINARY
 // ===========================================
@@ -35,11 +34,17 @@ function generateHash(data) {
 // ===========================================
 // CPF MASK
 // ===========================================
+console.log('🔥 USANDO maskCPF DO SERVICE');
+
+
 function maskCPF(cpf) {
   if (!cpf) return "***.***.***-**";
-  const digits = cpf.replace(/\D/g, "");
-  return `***.***.***-${digits.slice(-2)}`;
+
+  const digits = cpf.replace(/\D/g, "").padStart(11, "0");
+
+  return `${digits[0]}**.${digits[4]}**.***-${digits.slice(9)}`;
 }
+
 
 // ===========================================
 // FRONTEND URL
@@ -54,6 +59,9 @@ function getFrontendUrl() {
 async function generatePDF(data) {
   return new Promise(async (resolve, reject) => {
     try {
+      console.log('🔥 SERVICE RODANDO');
+      console.log('📌 CPF RECEBIDO:', data.cpf);
+      console.log('✅ CPF FORMATADO:', maskCPF(data.cpf));
 
       if (!process.env.CLOUDINARY_URL) {
         return reject(new Error('CLOUDINARY_URL não configurado'));
@@ -174,8 +182,8 @@ console.log('🔍 Header:', buffer.slice(0, 8));
       // ===========================================
       // QR CODE (SELO)
       // ===========================================
-      doc.image(qrCodeDataUrl, 110, 375, {
-        width: 120
+      doc.image(qrCodeDataUrl, 645, 480, {
+        width: 85
       });
 
       // ===========================================

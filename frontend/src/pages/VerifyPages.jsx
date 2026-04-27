@@ -71,11 +71,13 @@ function VerifyCertificate() {
   /* =========================
      MASK CPF (SEGURANÇA)
   ========================== */
-  const maskCpf = (cpf) => {
-    if (!cpf) return "***.***.***-**";
-    const digits = cpf.replace(/\D/g, "");
-    return `***.***.***-${digits.slice(-2)}`;
-  };
+function maskCPF(cpf) {
+  if (!cpf) return "***.***.***-**";
+
+  const digits = cpf.replace(/\D/g, "").padStart(11, "0");
+
+  return `${digits[0]}**.${digits[4]}**.***-${digits.slice(9)}`;
+}
 
   /* =========================
      FORMAT DATE

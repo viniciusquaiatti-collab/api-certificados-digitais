@@ -63,6 +63,7 @@ class CertificateController {
       try {
         pdfUrl = await CertificateService.generatePDF({
           nome_participante,
+          cpf,
           cpf_parcial,
           nome_curso,
           carga_horaria,
