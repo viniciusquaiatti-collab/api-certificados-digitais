@@ -3,6 +3,7 @@ const Certificate = require('../models/Certificate');
 const CertificateService = require('../services/certificateService');
 const AuditLog = require('../models/AuditLog');
 const crypto = require('crypto');
+const certificateTemplate = require('../templates/certificateTemplate');
 
 console.log('🔥 [CertificateController] CARREGADO 🔥');
 
