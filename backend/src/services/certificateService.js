@@ -6,8 +6,8 @@ const cloudinary = require('cloudinary').v2;
 const crypto = require('crypto');
 const path = require('path');
 const fs = require('fs');
-console.log('--- [CertificateService] Iniciando serviço de certificados ---');
 
+console.log('--- [CertificateService] Serviço iniciado ---');
 
 // ===========================================
 // CLOUDINARY
@@ -21,7 +21,7 @@ if (!process.env.CLOUDINARY_URL) {
 }
 
 // ===========================================
-// HASH REAL (IMPORTANTE)
+// HASH
 // ===========================================
 function generateHash(data) {
   const secret = process.env.CERTIFICATE_SECRET_KEY || 'default-secret';
@@ -32,11 +32,8 @@ function generateHash(data) {
 }
 
 // ===========================================
-// CPF MASK
+// CPF MASK (SEGURA)
 // ===========================================
-console.log('🔥 USANDO maskCPF DO SERVICE');
-
-
 function maskCPF(cpf) {
   if (!cpf) return "***.***.***-**";
 
@@ -44,7 +41,6 @@ function maskCPF(cpf) {
 
   return `${digits[0]}**.${digits[4]}**.***-${digits.slice(9)}`;
 }
-
 
 // ===========================================
 // FRONTEND URL
@@ -59,9 +55,8 @@ function getFrontendUrl() {
 async function generatePDF(data) {
   return new Promise(async (resolve, reject) => {
     try {
-      console.log('🔥 SERVICE RODANDO');
-      console.log('📌 CPF RECEBIDO:', data.cpf);
-      console.log('✅ CPF FORMATADO:', maskCPF(data.cpf));
+      console.log('[PDF] Gerando certificado...');
+      console.log('CPF formatado:', maskCPF(data.cpf));
 
       if (!process.env.CLOUDINARY_URL) {
         return reject(new Error('CLOUDINARY_URL não configurado'));
@@ -98,7 +93,6 @@ async function generatePDF(data) {
           );
 
           resolve(result.secure_url);
-
         } catch (err) {
           reject(err);
         }
@@ -107,29 +101,13 @@ async function generatePDF(data) {
       doc.on('error', reject);
 
       // ===========================================
-      // FUNDO (CRÍTICO - CORRIGIDO)
+      // FUNDO
       // ===========================================
-     const bgPath = path.join(__dirname, '../assets/certificate-bg.png');
+      const bgPath = path.join(__dirname, '../assets/certificate-bg.png');
 
-// ===========================================
-// DEBUG PROFISSIONAL (ANÁLISE COMPLETA)
-// ===========================================
-console.log(' Caminho da imagem:', bgPath);
-console.log(' EXISTE?', fs.existsSync(bgPath));
-
-if (!fs.existsSync(bgPath)) {
-  return reject(new Error('Imagem não encontrada: ' + bgPath));
-}
-
-// INFO DO ARQUIVO
-const stats = fs.statSync(bgPath);
-console.log(' Tamanho (bytes):', stats.size);
-
-// LEITURA DO ARQUIVO
-const buffer = fs.readFileSync(bgPath);
-
-// ASSINATURA DO ARQUIVO (CRÍTICO)
-console.log('🔍 Header:', buffer.slice(0, 8));
+      if (!fs.existsSync(bgPath)) {
+        return reject(new Error('Imagem não encontrada: ' + bgPath));
+      }
 
       doc.image(bgPath, 0, 0, {
         width: 842,
@@ -137,9 +115,27 @@ console.log('🔍 Header:', buffer.slice(0, 8));
       });
 
       // ===========================================
+      // SELO DOURADO (ALINHADO PROFISSIONAL)
+      // ===========================================
+      doc
+        .font('Helvetica-Bold')
+        .fontSize(10)
+        .fillColor('#000000')
+        .text('CERTIFICADO', 105, 475, {
+          width: 110,
+          align: 'center'
+        });
+
+      doc
+        .fontSize(10)
+        .text('AUTENTICADO', 105, 490, {
+          width: 110,
+          align: 'center'
+        });
+
+      // ===========================================
       // TEXTO CENTRAL
       // ===========================================
-
       doc
         .font('Helvetica-Bold')
         .fontSize(36)
@@ -176,11 +172,14 @@ console.log('🔍 Header:', buffer.slice(0, 8));
         .fillColor('#cccccc')
         .text(`Carga horária: ${data.carga_horaria} horas`, 0, 320, { align: 'center' });
 
+      // ✅ TEXTO PROFISSIONAL (SEM DUPLICAÇÃO)
       doc
-        .text(`Emitido em: ${new Date(data.data_emissao).toLocaleDateString('pt-BR')}`, 0, 340, { align: 'center' });
+        .text(`Data de Emissão: ${new Date(data.data_emissao).toLocaleDateString('pt-BR')}`, 0, 340, { align: 'center' });
+
+      //  REMOVIDO: Certificado Autenticado duplicado
 
       // ===========================================
-      // QR CODE (SELO)
+      // QR CODE
       // ===========================================
       doc.image(qrCodeDataUrl, 645, 480, {
         width: 85
