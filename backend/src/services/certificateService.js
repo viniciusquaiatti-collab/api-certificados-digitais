@@ -43,6 +43,15 @@ function maskCPF(cpf) {
 }
 
 // ===========================================
+// FORMAT DATE (CORREÇÃO TIMEZONE)
+// ===========================================
+function formatDateBR(dateString) {
+  if (!dateString) return "";
+  const [year, month, day] = dateString.split("-");
+  return `${day}/${month}/${year}`;
+}
+
+// ===========================================
 // FRONTEND URL
 // ===========================================
 function getFrontendUrl() {
@@ -172,11 +181,9 @@ async function generatePDF(data) {
         .fillColor('#cccccc')
         .text(`Carga horária: ${data.carga_horaria} horas`, 0, 320, { align: 'center' });
 
-      // ✅ TEXTO PROFISSIONAL (SEM DUPLICAÇÃO)
+      // ✅ CORREÇÃO DEFININITIVA DO BUG DE DATA
       doc
-        .text(`Data de Emissão: ${new Date(data.data_emissao).toLocaleDateString('pt-BR')}`, 0, 340, { align: 'center' });
-
-      //  REMOVIDO: Certificado Autenticado duplicado
+        .text(`Data de Emissão: ${formatDateBR(data.data_emissao)}`, 0, 340, { align: 'center' });
 
       // ===========================================
       // QR CODE
