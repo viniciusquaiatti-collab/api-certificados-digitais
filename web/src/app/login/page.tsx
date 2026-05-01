@@ -43,11 +43,15 @@ export default function LoginPage() {
         throw new Error("Resposta inválida do servidor");
       }
 
-      if (!response.ok) {
-        console.error("❌ [LOGIN] Erro no login:", data);
-        alert(data.error || "Erro ao logar");
-        return;
-      }
+     if (!response.ok) {
+  console.error("❌ [LOGIN ERROR]", data);
+
+  // 🔥 REMOVE TOKEN SUJO
+  localStorage.removeItem("token");
+  document.cookie = "token=; Max-Age=0; path=/;";
+
+  throw new Error(data.error || "Erro no login");
+}
 
       console.log("✅ [LOGIN] Login bem sucedido!");
 
@@ -84,15 +88,23 @@ export default function LoginPage() {
       console.log("🧪 Preview:", token.substring(0, 30));
 
       // =============================
-      // SALVAR TOKEN
+      // SALVAR TOKEN (LOCAL + COOKIE)
       // =============================
-      localStorage.setItem("token", token);
 
+      // 🔥 localStorage (client side)
+      localStorage.setItem("token", token);
       console.log("💾 [TOKEN] Salvo no localStorage");
+
+      // 🔥 cookie (middleware / server side)
+      document.cookie = `token=${token}; path=/;`;
+
+      console.log("🍪 [TOKEN] Salvo em cookie");
 
       // DEBUG EXTRA
       const savedToken = localStorage.getItem("token");
       console.log("🔁 [TOKEN] Recuperado do localStorage:", savedToken);
+
+      console.log("📄 [COOKIE] document.cookie:", document.cookie);
 
       // =============================
       // REDIRECT

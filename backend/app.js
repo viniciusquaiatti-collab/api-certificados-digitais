@@ -1,4 +1,5 @@
-// app.js - VERSÃO CORRIGIDA PARA RAILWAY (copie tudo)
+// app.js
+
 require('dotenv').config();
 
 const express = require('express');
@@ -12,24 +13,53 @@ const authRoutes = require('./src/routes/authRoutes');
 const certificateRoutes = require('./src/routes/certificateRoutes');
 
 const app = express();
-
-// PORTA (Railway usa process.env.PORT automaticamente)
 const PORT = process.env.PORT || 8080;
+
+console.log('🚀 [APP] Inicializando servidor...');
+console.log('🌍 [ENV] NODE_ENV:', process.env.NODE_ENV);
 
 // TRUST PROXY (Railway)
 app.set('trust proxy', 1);
 
-// --- MIDDLEWARES GLOBAIS ---
+// ===========================================
+// MIDDLEWARES GLOBAIS
+// ===========================================
 app.use(cors());
+
+app.use((req, res, next) => {
+  console.log('🌐 [CORS] Request liberada');
+  next();
+});
+
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
-// --- ARQUIVOS ESTÁTICOS ---
+// ===========================================
+// DEBUG GLOBAL (NÍVEL EMPRESA)
+// ===========================================
+app.use((req, res, next) => {
+  console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+  console.log('📥 [REQUEST INCOMING]');
+  console.log('🕒 Time:', new Date().toISOString());
+  console.log('➡️ Method:', req.method);
+  console.log('📍 URL:', req.originalUrl);
+  console.log('🌐 IP:', req.ip);
+  console.log('🧾 Headers:', req.headers);
+  console.log('📦 Body:', req.body);
+  console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+  next();
+});
+
+// ===========================================
+// ARQUIVOS ESTÁTICOS
+// ===========================================
 app.use('/certificates', express.static(path.join(__dirname, 'src/certificates')));
 
-// --- RATE LIMIT (somente /api) ---
+// ===========================================
+// RATE LIMIT
+// ===========================================
 const limiter = rateLimit({
-  windowMs: 15 * 60 * 1000, // 15 minutos
+  windowMs: 15 * 60 * 1000,
   max: 100,
   standardHeaders: true,
   legacyHeaders: false,
@@ -37,106 +67,118 @@ const limiter = rateLimit({
 
 app.use('/api', limiter);
 
-// --- LOGS DETALHADOS ---
-app.use((req, res, next) => {
-  console.log(
-    `[${new Date().toISOString()}] ${req.method} ${req.originalUrl} - IP: ${req.ip}`
-  );
-  next();
-});
-
-// ==========================
-//  ROTA RAIZ (ESSENCIAL PARA TESTE)
-// ==========================
+// ===========================================
+// ROTA RAIZ
+// ===========================================
 app.get('/', (req, res) => {
+  console.log('🏠 [ROOT] Health check raiz acessado');
+
   res.status(200).json({
     success: true,
-    message: ' API Certificados Digitais ONLINE - Railway OK!',
+    message: 'API Certificados Digitais ONLINE',
     port: PORT,
-    docs: {
-      health: '/api/health',
+    endpoints: {
       auth: '/api/auth',
       certificates: '/api/certificates',
-      teste: '/teste'
+      health: '/api/health'
     }
   });
 });
 
-//  TESTE RÁPIDO (TEXTO SIMPLES)
+// ===========================================
+// TESTE
+// ===========================================
 app.get('/teste', (req, res) => {
-  res.send(' API ONLINE - Funcionando no Railway!');
+  console.log('🧪 [TESTE] Endpoint acionado');
+  res.send('API ONLINE');
 });
 
-// --- HEALTH CHECK ---
+// ===========================================
+// HEALTH CHECK
+// ===========================================
 app.get('/api/health', (req, res) => {
+  console.log('💓 [HEALTH] Verificação de saúde');
+
   res.status(200).json({
     success: true,
     status: 'UP',
-    port: PORT,
     timestamp: new Date().toISOString()
   });
 });
 
-// --- ROTAS PRINCIPAIS ---
-app.use('/api/auth', authRoutes);
-app.use('/api/certificates', certificateRoutes);
+// ===========================================
+// ROTAS PRINCIPAIS
+// ===========================================
+console.log('📡 [APP] Registrando rotas...');
 
-// --- 404 (SEMPRE DEPOIS DAS ROTAS) ---
+app.use('/api/auth', (req, res, next) => {
+  console.log('🔐 [ROUTE PREFIX] /api/auth');
+  next();
+}, authRoutes);
+
+app.use('/api/certificates', (req, res, next) => {
+  console.log('📜 [ROUTE PREFIX] /api/certificates');
+  next();
+}, certificateRoutes);
+
+// ===========================================
+// 404
+// ===========================================
 app.use((req, res) => {
-  console.warn(`[404] ${req.method} ${req.originalUrl} from ${req.ip}`);
+  console.warn('❌ [404] Rota não encontrada:', req.originalUrl);
+
   res.status(404).json({
     success: false,
-    error: 'Rota não encontrada.',
-    requested: req.originalUrl
+    error: 'Rota não encontrada',
+    path: req.originalUrl
   });
 });
 
-// --- ERROR HANDLER ---
+// ===========================================
+// ERROR HANDLER
+// ===========================================
 app.use((err, req, res, next) => {
-  console.error('[ERRO]', err.message, err.stack);
-  
-  const isDev = process.env.NODE_ENV === 'development';
-  
+  console.error('🔥 [GLOBAL ERROR]');
+  console.error('Mensagem:', err.message);
+  console.error('Stack:', err.stack);
+
   res.status(err.status || 500).json({
     success: false,
-    error: isDev ? err.message : 'Erro interno do servidor.',
-    ...(isDev && { stack: err.stack })
+    error: process.env.NODE_ENV === 'development'
+      ? err.message
+      : 'Erro interno do servidor'
   });
 });
 
-// ========================================
-//  START SERVER - CORRIGIDO RAILWAY
-// ========================================
+// ===========================================
+// START SERVER
+// ===========================================
 async function startServer() {
   try {
-    // Teste DB (não trava server)
+    console.log('🔌 [DB] Testando conexão...');
     await db.query('SELECT NOW()');
-    console.log(' [Database] Conectado PostgreSQL');
+    console.log('✅ [DB] PostgreSQL conectado');
   } catch (error) {
-    console.warn(' [Database] Sem conexão inicial, continua:', error.message);
+    console.warn('⚠️ [DB] Falha inicial:', error.message);
   }
-  
-  // SERVER SEMPRE INICIA - BIND 0.0.0.0 OBRIGATÓRIO RAILWAY
+
   const server = app.listen(PORT, '0.0.0.0', () => {
-    console.log(` Servidor rodando em 0.0.0.0:${PORT}`);
-    console.log(` Root: http://localhost:${PORT}/`);
-    console.log(` Health: http://localhost:${PORT}/api/health`);
+    console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+    console.log(`🚀 Servidor ONLINE`);
+    console.log(`🌍 http://localhost:${PORT}`);
+    console.log(`💓 /api/health`);
+    console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
   });
-  
-  // Graceful shutdown (Railway)
+
   process.on('SIGTERM', () => {
-    console.log(' SIGTERM - Fechando graciosamente');
-    server.close(() => {
-      console.log(' Server fechado');
-      process.exit(0);
-    });
+    console.log('🛑 [SIGTERM] Encerrando...');
+    server.close(() => process.exit(0));
   });
-  
+
   process.on('SIGINT', () => {
-    console.log(' SIGINT - Fechando');
+    console.log('🛑 [SIGINT] Encerrando...');
     server.close(() => process.exit(0));
   });
 }
 
-console.log(' Iniciando API Certificados Digitais...');
 startServer();
