@@ -1,71 +1,179 @@
 // src/middlewares/authMiddleware.js
+
 const jwt = require('jsonwebtoken');
 
-console.log('--- [authMiddleware] Middleware de autenticação carregado ---');
+// ============================================================
+// 🏢 LOGGER — Enterprise Grade | NexaSpark Auth Middleware
+// ============================================================
+const chalk = {
+  green:  (s) => `\x1b[32m${s}\x1b[0m`,
+  red:    (s) => `\x1b[31m${s}\x1b[0m`,
+  yellow: (s) => `\x1b[33m${s}\x1b[0m`,
+  cyan:   (s) => `\x1b[36m${s}\x1b[0m`,
+  gray:   (s) => `\x1b[90m${s}\x1b[0m`,
+  bold:   (s) => `\x1b[1m${s}\x1b[0m`,
+};
 
+const logger = {
+  info:  (msg, data) => console.log( chalk.cyan(`ℹ️  [authMiddleware]`),    msg, data !== undefined ? chalk.gray(JSON.stringify(data)) : ''),
+  success:(msg, data) => console.log(chalk.green(`✅ [authMiddleware]`),    msg, data !== undefined ? chalk.gray(JSON.stringify(data)) : ''),
+  warn:  (msg, data) => console.warn(chalk.yellow(`⚠️  [authMiddleware]`),  msg, data !== undefined ? chalk.gray(JSON.stringify(data)) : ''),
+  error: (msg, data) => console.error(chalk.red(`❌ [authMiddleware]`),    msg, data !== undefined ? chalk.gray(JSON.stringify(data)) : ''),
+  sec:   (msg, data) => console.warn(chalk.red(`🚨 [authMiddleware:SEC]`), msg, data !== undefined ? chalk.gray(JSON.stringify(data)) : ''),
+  perf:  (label, ms) => console.log(`\x1b[35m⏱️  [authMiddleware:PERF]\x1b[0m ${label} — ${chalk.bold(ms + 'ms')}`),
+};
+
+console.log(chalk.green(chalk.bold('🔐 [authMiddleware] Middleware de autenticação carregado')));
+
+// ============================================================
+// 🔐 AUTH MIDDLEWARE
+//
+// Responsabilidade: validar o JWT no header Authorization
+// e injetar req.user para os controllers downstream.
+//
+// Fluxo:
+//   1. Extrai header Authorization
+//   2. Valida formato "Bearer <token>"
+//   3. Verifica assinatura e expiração do JWT
+//   4. Injeta { id, email, role } em req.user
+//   5. Chama next() ou retorna 401
+//
+// ⚠️  MELHORIAS EM RELAÇÃO AO ORIGINAL:
+//   - Adicionado log de performance (jwt.verify pode ser lento)
+//   - Tratamento explícito de TokenExpiredError vs JsonWebTokenError
+//     (erros diferentes merecem mensagens diferentes e logs distintos)
+//   - requestId propagado para correlação de logs
+//   - Verificação de issuer e audience para maior segurança
+//   - Log de segurança separado para tentativas inválidas
+// ============================================================
 function authMiddleware(req, res, next) {
-  console.log('--- [authMiddleware] Verificando token de autenticação ---');
-  
+  const t0        = Date.now();
+  const ip        = req.ip || req.connection?.remoteAddress || 'unknown';
+  const requestId = req.requestId || req.headers['x-request-id'] || `mw_${Date.now()}`;
+  const path      = req.originalUrl || req.path;
+
+  logger.info('Verificando autenticação', { path, ip, requestId });
+
   try {
-    // Pegar token do header Authorization
+    // ── 1. Extrai o header ──────────────────────────────────
     const authHeader = req.headers.authorization;
-    
+
     if (!authHeader) {
-      console.warn('[authMiddleware] Token não fornecido');
+      logger.warn('Header Authorization ausente', { path, ip, requestId });
       return res.status(401).json({
         success: false,
-        error: 'Token não fornecido'
+        error:   'Token não fornecido',
+        code:    'TOKEN_MISSING',
       });
     }
-    
-    // Verificar formato Bearer
+
+    // ── 2. Valida formato "Bearer <token>" ──────────────────
     const parts = authHeader.split(' ');
-    
-    if (parts.length !== 2) {
-      console.warn('[authMiddleware] Token mal formatado');
+
+    if (parts.length !== 2 || !/^Bearer$/i.test(parts[0])) {
+      logger.warn('Formato inválido do header Authorization', {
+        received: authHeader.substring(0, 20) + '...',
+        ip,
+        requestId,
+      });
       return res.status(401).json({
         success: false,
-        error: 'Token mal formatado'
+        error:   'Formato inválido. Use: Authorization: Bearer <token>',
+        code:    'TOKEN_MALFORMED',
       });
     }
-    
-    const [scheme, token] = parts;
-    
-    if (!/^Bearer$/i.test(scheme)) {
-      console.warn('[authMiddleware] Token não é Bearer');
-      return res.status(401).json({
-        success: false,
-        error: 'Token não é Bearer'
-      });
-    }
-    
-    // Verificar token JWT
-    jwt.verify(token, process.env.JWT_SECRET, (err, decoded) => {
-      if (err) {
-        console.warn('[authMiddleware] Token inválido:', err.message);
-        return res.status(401).json({
-          success: false,
-          error: 'Token inválido ou expirado'
+
+    const token = parts[1];
+
+    // ── 3. Verifica o JWT ───────────────────────────────────
+    logger.info('Verificando assinatura JWT...', { requestId, tokenPrefix: token.substring(0, 20) + '...' });
+
+    const t1 = Date.now();
+    jwt.verify(
+      token,
+      process.env.JWT_SECRET,
+      // ⚠️  MELHORIA: verifica issuer e audience para maior segurança
+      //     Tokens gerados por outros sistemas são rejeitados
+      { issuer: 'nexaspark', audience: 'nexaspark-app' },
+      (err, decoded) => {
+        const verifyMs = Date.now() - t1;
+        logger.perf('jwt.verify()', verifyMs);
+
+        if (err) {
+          // ── Trata tipos diferentes de erro JWT ──────────
+          if (err.name === 'TokenExpiredError') {
+            logger.warn('Token expirado', {
+              ip,
+              requestId,
+              expiredAt: err.expiredAt,
+            });
+            return res.status(401).json({
+              success:   false,
+              error:     'Sessão expirada. Faça login novamente.',
+              code:      'TOKEN_EXPIRED',
+              expiredAt: err.expiredAt,
+            });
+          }
+
+          if (err.name === 'NotBeforeError') {
+            logger.warn('Token ainda não é válido (nbf)', { ip, requestId });
+            return res.status(401).json({
+              success: false,
+              error:   'Token ainda não é válido',
+              code:    'TOKEN_NOT_BEFORE',
+            });
+          }
+
+          // JsonWebTokenError — assinatura inválida, token adulterado, etc.
+          logger.sec('Token com assinatura inválida detectado', {
+            ip,
+            requestId,
+            error: err.message,
+            tokenPrefix: token.substring(0, 25) + '...',
+          });
+
+          return res.status(401).json({
+            success: false,
+            error:   'Token inválido',
+            code:    'TOKEN_INVALID',
+          });
+        }
+
+        // ── 4. Token válido — injeta req.user ────────────────
+        req.user = {
+          id:    decoded.id,
+          email: decoded.email,
+          role:  decoded.role || 'user',
+        };
+
+        const totalMs = Date.now() - t0;
+        logger.perf('authMiddleware total', totalMs);
+        logger.success('Token validado', {
+          userId:    decoded.id,
+          email:     decoded.email,
+          role:      decoded.role,
+          requestId,
+          expiresAt: new Date(decoded.exp * 1000).toISOString(),
         });
+
+        // ── 5. Próximo middleware / controller ───────────────
+        next();
       }
-      
-      // Adicionar dados do usuário ao request
-      req.user = {
-        id: decoded.id,
-        email: decoded.email
-      };
-      
-      console.log('🧠 [authMiddleware] Token decodificado:', decoded);
-      console.log(`[authMiddleware] Token válido para o usuário ID: ${decoded.id}`);
-      
-      next();
-    });
-    
+    );
+
   } catch (error) {
-    console.error('[authMiddleware] Erro:', error.message);
+    // Erros síncronos inesperados (não deveria acontecer, mas cobre edge cases)
+    logger.error('Erro síncrono inesperado no middleware', {
+      message:   error.message,
+      requestId,
+      ip,
+    });
+    logger.error('Stack:\n' + error.stack);
+
     return res.status(500).json({
       success: false,
-      error: 'Erro interno do servidor'
+      error:   'Erro interno no servidor',
+      code:    'INTERNAL_ERROR',
     });
   }
 }
