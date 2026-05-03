@@ -38,21 +38,31 @@ console.log(c.green(c.bold('🔏 [AuditLog] Modelo de auditoria inicializado')))
 //     pelo código ('REGISTER', 'LOGIN', etc.).
 //     Isso causava inconsistências de grafia e dificultava queries.
 //     Centralizamos aqui como constantes exportadas.
+//
+// ⚠️  ADIÇÃO: LOGIN_GOOGLE e REGISTER_GOOGLE adicionados para
+//     cobrir o fluxo OAuth 2.0 implementado via Passport.
+//     Sem essas entradas, AuditLog.create() emitia console.warn
+//     "Ação não catalogada em ACTIONS" a cada login Google,
+//     o que o Railway interpretava como nível "error" nos logs.
 // ============================================================
 const ACTIONS = Object.freeze({
-  // Auth
+  // Auth local
   REGISTER:          'REGISTER',
   LOGIN:             'LOGIN',
   LOGOUT:            'LOGOUT',
   LOGIN_FAILED:      'LOGIN_FAILED',
   TOKEN_REFRESHED:   'TOKEN_REFRESHED',
 
+  // ✅ NOVO — Auth OAuth Google
+  LOGIN_GOOGLE:      'LOGIN_GOOGLE',    // ← login via Google OAuth (conta existente ou nova)
+  REGISTER_GOOGLE:   'REGISTER_GOOGLE', // ← primeiro acesso via Google (conta criada)
+
   // Certificados
-  CERT_CREATED:      'CERT_CREATED',
-  CERT_VIEWED:       'CERT_VIEWED',
-  CERT_VERIFIED:     'CERT_VERIFIED',
-  CERT_PDF_GENERATED:'CERT_PDF_GENERATED',
-  CERT_DELETED:      'CERT_DELETED',
+  CERT_CREATED:       'CERT_CREATED',
+  CERT_VIEWED:        'CERT_VIEWED',
+  CERT_VERIFIED:      'CERT_VERIFIED',
+  CERT_PDF_GENERATED: 'CERT_PDF_GENERATED',
+  CERT_DELETED:       'CERT_DELETED',
 
   // Admin
   ADMIN_ACCESS:      'ADMIN_ACCESS',
