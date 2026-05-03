@@ -3,27 +3,16 @@
 // ============================================================
 // 🔁 NexaSpark — /auth/callback
 //
-// Responsabilidade:
-//   Página intermediária que captura o JWT vindo do backend
-//   após o fluxo OAuth Google ser concluído.
+// ⚠️  CORREÇÃO Next.js 16: useSearchParams() requer Suspense boundary.
+//     Separamos em dois componentes:
+//     - AuthCallbackPage  → wrapper com <Suspense> (export default)
+//     - AuthCallbackInner → lógica real com useSearchParams()
 //
-// Fluxo completo:
-//   1. Usuário clica "Continuar com Google" → /api/auth/google
-//   2. Passport redireciona → accounts.google.com
-//   3. Google autentica → backend /api/auth/google/callback
-//   4. Backend gera JWT → redireciona para ESTA PÁGINA:
-//      ${FRONTEND_URL}/auth/callback?token=xxx
-//   5. Esta página captura o token, salva, limpa URL, redireciona
-//
-// ⚠️  SEGURANÇA:
-//   - Token é removido da URL via history.replaceState()
-//     imediatamente após captura — não fica no browser history
-//   - Token é decodificado para log (sem verificar assinatura)
-//   - Validação de expiração feita no lado cliente para UX
-//   - Em caso de erro, redireciona para /login com query param
+//     Sem esse padrão, o build falha com:
+//     "useSearchParams() should be wrapped in a suspense boundary"
 // ============================================================
 
-import { useEffect, useState } from "react";
+import { useEffect, useState, Suspense } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { motion, AnimatePresence } from "framer-motion";
 
@@ -55,24 +44,24 @@ const logger = {
 // 🗺️  MAPA DE ERROS — mensagens amigáveis por código
 // ============================================================
 const OAUTH_ERROR_MESSAGES: Record<string, string> = {
-  google_auth_failed:   "A autenticação com Google falhou. Tente novamente.",
-  oauth_failed:         "Erro no fluxo de autenticação. Tente novamente.",
-  NO_USER:              "Perfil do Google não disponível. Tente com outra conta.",
-  oauth_invalid_user:   "Dados do perfil Google inválidos.",
-  oauth_server_error:   "Erro interno no servidor. Tente mais tarde.",
-  user_not_found:       "Usuário não encontrado após autenticação.",
-  token_error:          "Erro ao gerar sessão. Tente novamente.",
-  invalid_token:        "Token inválido recebido do servidor.",
+  google_auth_failed:  "A autenticação com Google falhou. Tente novamente.",
+  oauth_failed:        "Erro no fluxo de autenticação. Tente novamente.",
+  NO_USER:             "Perfil do Google não disponível. Tente com outra conta.",
+  oauth_invalid_user:  "Dados do perfil Google inválidos.",
+  oauth_server_error:  "Erro interno no servidor. Tente mais tarde.",
+  user_not_found:      "Usuário não encontrado após autenticação.",
+  token_error:         "Erro ao gerar sessão. Tente novamente.",
+  invalid_token:       "Token inválido recebido do servidor.",
 };
 
 type PageStatus = "processing" | "success" | "error";
 
 // ============================================================
-// 🔁 AUTH CALLBACK PAGE
+// 🔁 INNER — contém useSearchParams() dentro do Suspense
 // ============================================================
-export default function AuthCallbackPage() {
+function AuthCallbackInner() {
   const router       = useRouter();
-  const searchParams = useSearchParams();
+  const searchParams = useSearchParams(); // ← deve estar dentro de <Suspense>
 
   const [status,       setStatus]       = useState<PageStatus>("processing");
   const [errorMessage, setErrorMessage] = useState("");
@@ -89,50 +78,40 @@ export default function AuthCallbackPage() {
       timestamp: new Date().toISOString(),
     });
 
-    // ── Extrai parâmetros da URL ─────────────────────────────
     const token      = searchParams.get("token");
     const errorParam = searchParams.get("error");
     const errorCode  = searchParams.get("code");
 
     logger.info("PARAMS", "Parâmetros recebidos na URL", {
-      hasToken:   !!token,
-      tokenSize:  token?.length ?? 0,
-      hasError:   !!errorParam,
+      hasToken:    !!token,
+      tokenSize:   token?.length ?? 0,
+      hasError:    !!errorParam,
       errorParam,
       errorCode,
-      // ⚠️  Nunca logamos o token completo
       tokenPrefix: token ? token.substring(0, 25) + "..." : null,
     });
 
     // ── CASO 1: Erro vindo do backend ─────────────────────────
     if (errorParam) {
-      logger.error("OAUTH", "Erro OAuth detectado nos parâmetros", {
-        error: errorParam,
-        code:  errorCode,
-      });
+      logger.error("OAUTH", "Erro OAuth detectado nos parâmetros", { error: errorParam, code: errorCode });
 
       const friendlyMsg =
         OAUTH_ERROR_MESSAGES[errorParam] ||
         OAUTH_ERROR_MESSAGES[errorCode || ""] ||
         `Erro de autenticação: ${errorParam}`;
 
-      logger.error("OAUTH", `Mensagem mapeada: ${friendlyMsg}`);
-
-      // Limpa URL antes de mostrar erro
       window.history.replaceState({}, "", "/auth/callback");
-      logger.info("SEC", "URL limpa via replaceState (error params removidos)");
+      logger.info("SEC", "URL limpa via replaceState");
 
       setStatus("error");
       setErrorMessage(friendlyMsg);
 
-      // Redireciona para login após 3s com countdown
       let remaining = 3;
       const interval = setInterval(() => {
         remaining--;
         setCountdown(remaining);
         if (remaining <= 0) {
           clearInterval(interval);
-          logger.oauth("Redirecionando para /login após erro...");
           router.replace(`/login?error=${errorParam}`);
         }
       }, 1000);
@@ -142,7 +121,7 @@ export default function AuthCallbackPage() {
 
     // ── CASO 2: Sem token e sem erro ──────────────────────────
     if (!token) {
-      logger.warn("OAUTH", "Nenhum token e nenhum erro recebido — acesso direto à página?");
+      logger.warn("OAUTH", "Nenhum token recebido — acesso direto?");
       logger.sec("Possível acesso direto à rota /auth/callback sem fluxo OAuth", {
         referrer: document.referrer || "none",
       });
@@ -153,14 +132,10 @@ export default function AuthCallbackPage() {
     // ── CASO 3: Token recebido — processa ─────────────────────
     logger.oauth("Token JWT recebido do backend");
 
-    // ⚠️  SEGURANÇA CRÍTICA: remove o token da URL IMEDIATAMENTE
-    //     antes de qualquer processamento.
-    //     Token na URL fica no browser history e pode ser
-    //     capturado por extensões ou logs de servidor.
+    // ⚠️  Remove token da URL IMEDIATAMENTE — não fica no browser history
     window.history.replaceState({}, "", "/auth/callback");
-    logger.sec("Token removido da URL via replaceState ✅ (não fica no browser history)");
+    logger.sec("Token removido da URL via replaceState ✅");
 
-    // ── Decodifica payload para validação e log ───────────────
     try {
       const parts = token.split(".");
 
@@ -168,7 +143,6 @@ export default function AuthCallbackPage() {
         throw new Error(`JWT malformado — ${parts.length} partes (esperado 3)`);
       }
 
-      // Decodifica base64url → JSON
       const payloadRaw = parts[1]
         .replace(/-/g, "+")
         .replace(/_/g, "/")
@@ -177,34 +151,31 @@ export default function AuthCallbackPage() {
       const payload = JSON.parse(atob(payloadRaw));
 
       logger.oauth("Payload JWT decodificado", {
-        userId:       payload.id,
-        email:        payload.email,
-        nome:         payload.nome     || null,
-        avatar:       payload.avatar   ? "[present]" : null,
-        provider:     payload.auth_provider || "google",
-        role:         payload.role,
-        issuer:       payload.iss,
-        audience:     payload.aud,
-        issuedAt:     new Date((payload.iat || 0) * 1000).toISOString(),
-        expiresAt:    new Date((payload.exp || 0) * 1000).toISOString(),
-        tokenSize:    token.length,
+        userId:    payload.id,
+        email:     payload.email,
+        nome:      payload.nome     || null,
+        avatar:    payload.avatar   ? "[present]" : null,
+        provider:  payload.auth_provider || "google",
+        role:      payload.role,
+        issuer:    payload.iss,
+        audience:  payload.aud,
+        issuedAt:  new Date((payload.iat || 0) * 1000).toISOString(),
+        expiresAt: new Date((payload.exp || 0) * 1000).toISOString(),
+        tokenSize: token.length,
       });
 
-      // ── Valida expiração ──────────────────────────────────
+      // Valida expiração
       const isExpired = Date.now() > (payload.exp || 0) * 1000;
       if (isExpired) {
         logger.sec("Token recebido já está expirado!", {
           expiredAt: new Date((payload.exp || 0) * 1000).toISOString(),
-          now:       new Date().toISOString(),
         });
         throw new Error("Token expirado recebido do servidor");
       }
 
-      // ── Salva token ───────────────────────────────────────
-      logger.info("STORAGE", "Salvando token no localStorage...");
+      // Salva token
+      logger.info("STORAGE", "Salvando token...");
       localStorage.setItem("token", token);
-
-      // Cookie para middleware Next.js (SSR auth check)
       document.cookie = `token=${token}; path=/; SameSite=Lax; Max-Age=${7 * 24 * 60 * 60}`;
 
       logger.success("STORAGE", "Token salvo — localStorage + cookie (7d) ✅", {
@@ -213,7 +184,6 @@ export default function AuthCallbackPage() {
         provider: payload.auth_provider,
       });
 
-      // Salva info do usuário para exibir na UI de sucesso
       setUserInfo({
         email:    payload.email,
         nome:     payload.nome || payload.email?.split("@")[0],
@@ -222,7 +192,7 @@ export default function AuthCallbackPage() {
 
       const totalMs = performance.now() - t0;
       logger.perf("CALLBACK", "Processamento completo", totalMs);
-      logger.success("OAUTH", "══ OAUTH CALLBACK CONCLUÍDO COM SUCESSO ══", {
+      logger.success("OAUTH", "══ OAUTH CALLBACK CONCLUÍDO ══", {
         userId:   payload.id,
         email:    payload.email,
         provider: payload.auth_provider,
@@ -230,9 +200,6 @@ export default function AuthCallbackPage() {
       });
       logger.bigsep();
 
-      // ── Redireciona para dashboard com breve delay ─────────
-      // ⚠️  Delay de 1s para o usuário ver a confirmação visual
-      //     antes do redirect — melhora percepção de UX
       setStatus("success");
 
       setTimeout(() => {
@@ -245,7 +212,7 @@ export default function AuthCallbackPage() {
         message: decodeErr.message,
         type:    decodeErr.name,
       });
-      logger.error("TOKEN", "Stack:\n" + decodeErr.stack);
+      console.error(decodeErr.stack);
 
       setStatus("error");
       setErrorMessage("Token inválido recebido. Tente fazer login novamente.");
@@ -264,9 +231,6 @@ export default function AuthCallbackPage() {
     }
   }, []);
 
-  // ============================================================
-  // 🎨 RENDER
-  // ============================================================
   return (
     <div className="min-h-screen bg-black flex items-center justify-center px-4 relative overflow-hidden">
 
@@ -287,7 +251,7 @@ export default function AuthCallbackPage() {
 
       <AnimatePresence mode="wait">
 
-        {/* ── PROCESSING ── */}
+        {/* PROCESSING */}
         {status === "processing" && (
           <motion.div
             key="processing"
@@ -312,7 +276,7 @@ export default function AuthCallbackPage() {
           </motion.div>
         )}
 
-        {/* ── SUCCESS ── */}
+        {/* SUCCESS */}
         {status === "success" && (
           <motion.div
             key="success"
@@ -332,24 +296,18 @@ export default function AuthCallbackPage() {
                 <polyline points="20 6 9 17 4 12"/>
               </svg>
             </motion.div>
-
             <p className="text-white font-semibold text-lg mb-1">Autenticado com sucesso!</p>
-
             {userInfo?.nome && (
-              <p className="text-emerald-400 text-sm mb-1">
-                Bem-vindo, {userInfo.nome.split(" ")[0]}
-              </p>
+              <p className="text-emerald-400 text-sm mb-1">Bem-vindo, {userInfo.nome.split(" ")[0]}</p>
             )}
-
             {userInfo?.email && (
               <p className="text-gray-500 text-xs mb-4">{userInfo.email}</p>
             )}
-
             <p className="text-gray-600 text-xs">Redirecionando para o dashboard...</p>
           </motion.div>
         )}
 
-        {/* ── ERROR ── */}
+        {/* ERROR */}
         {status === "error" && (
           <motion.div
             key="error"
@@ -365,13 +323,11 @@ export default function AuthCallbackPage() {
                 <line x1="6" y1="6" x2="18" y2="18"/>
               </svg>
             </div>
-
             <p className="text-white font-semibold text-lg mb-2">Falha na autenticação</p>
             <p className="text-red-400 text-sm mb-4 leading-relaxed">{errorMessage}</p>
             <p className="text-gray-600 text-xs">
               Redirecionando em <span className="text-gray-400 font-medium">{countdown}s</span>...
             </p>
-
             <button
               onClick={() => router.replace("/login")}
               className="mt-4 text-emerald-500 hover:text-emerald-400 text-xs transition-colors underline underline-offset-2"
@@ -383,5 +339,42 @@ export default function AuthCallbackPage() {
 
       </AnimatePresence>
     </div>
+  );
+}
+
+// ============================================================
+// 🔁 LOADING FALLBACK — exibido enquanto o Suspense carrega
+// ============================================================
+function AuthCallbackLoading() {
+  return (
+    <div className="min-h-screen bg-black flex items-center justify-center">
+      <div className="text-center">
+        <div className="w-14 h-14 rounded-2xl bg-emerald-950/60 border border-emerald-900/40 flex items-center justify-center mx-auto mb-6">
+          <svg className="animate-spin" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#34d399" strokeWidth="2">
+            <path d="M21 12a9 9 0 1 1-6.219-8.56"/>
+          </svg>
+        </div>
+        <p className="text-white font-semibold text-lg mb-2">Autenticando...</p>
+        <p className="text-gray-500 text-sm">Verificando suas credenciais Google</p>
+      </div>
+    </div>
+  );
+}
+
+// ============================================================
+// 🔁 EXPORT DEFAULT — wrapper com Suspense (obrigatório Next.js 16)
+//
+// ⚠️  useSearchParams() só pode ser chamado dentro de um componente
+//     que está dentro de <Suspense>. O export default é o wrapper
+//     que fornece esse boundary para o AuthCallbackInner.
+//
+// Padrão recomendado pela Vercel/Next.js para qualquer componente
+// que use useSearchParams() no App Router.
+// ============================================================
+export default function AuthCallbackPage() {
+  return (
+    <Suspense fallback={<AuthCallbackLoading />}>
+      <AuthCallbackInner />
+    </Suspense>
   );
 }
