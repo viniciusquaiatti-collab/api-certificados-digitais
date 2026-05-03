@@ -1,37 +1,49 @@
 "use client";
 
 import { useEffect, useState, useRef } from "react";
-import { useRouter } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
 import { motion, AnimatePresence } from "framer-motion";
 
 // ============================================================
-// 🏢 LOGGER — Enterprise Grade | NexaSpark
+// 🏢 LOGGER — Enterprise Grade | NexaSpark Frontend
+//
+// Padrão idêntico ao backend — colored console com prefixos.
+// Cada evento é rastreável no DevTools do browser.
 // ============================================================
-const LOG_PREFIX = "[NexaSpark]";
+const LOG_PREFIX = "[NexaSpark:Login]";
+
 const logger = {
-  info:    (scope: string, msg: string, data?: any) => console.log(`%c${LOG_PREFIX} ℹ️  [${scope}]%c ${msg}`, "color:#60a5fa;font-weight:bold;", "color:inherit;", data ?? ""),
-  success: (scope: string, msg: string, data?: any) => console.log(`%c${LOG_PREFIX} ✅ [${scope}]%c ${msg}`, "color:#34d399;font-weight:bold;", "color:inherit;", data ?? ""),
-  warn:    (scope: string, msg: string, data?: any) => console.warn(`%c${LOG_PREFIX} ⚠️  [${scope}]%c ${msg}`, "color:#fbbf24;font-weight:bold;", "color:inherit;", data ?? ""),
-  error:   (scope: string, msg: string, data?: any) => console.error(`%c${LOG_PREFIX} ❌ [${scope}]%c ${msg}`, "color:#f87171;font-weight:bold;", "color:inherit;", data ?? ""),
-  perf:    (scope: string, label: string, ms: number) => console.log(`%c${LOG_PREFIX} ⏱️  [${scope}]%c ${label} — ${ms.toFixed(2)}ms`, "color:#a78bfa;font-weight:bold;", "color:inherit;"),
-  event:   (scope: string, action: string, data?: any) => console.log(`%c${LOG_PREFIX} 🎯 [${scope}]%c ACTION → ${action}`, "color:#f472b6;font-weight:bold;", "color:inherit;", data ?? ""),
-  mount:   (c: string) => console.log(`%c${LOG_PREFIX} 🔧 [MOUNT]%c <${c}> renderizado`, "color:#38bdf8;font-weight:bold;", "color:inherit;"),
-  unmount: (c: string) => console.log(`%c${LOG_PREFIX} 🗑️  [UNMOUNT]%c <${c}> destruído`, "color:#94a3b8;font-weight:bold;", "color:inherit;"),
-  nav:     (dest: string) => console.log(`%c${LOG_PREFIX} 🧭 [NAV]%c Navegando → ${dest}`, "color:#fb923c;font-weight:bold;", "color:inherit;"),
-  auth:    (msg: string, data?: any) => console.log(`%c${LOG_PREFIX} 🔐 [AUTH]%c ${msg}`, "color:#c084fc;font-weight:bold;", "color:inherit;", data ?? ""),
+  info:    (scope: string, msg: string, data?: any) =>
+    console.log(`%c${LOG_PREFIX} ℹ️  [${scope}]%c ${msg}`, "color:#60a5fa;font-weight:bold;", "color:inherit;", data ?? ""),
+  success: (scope: string, msg: string, data?: any) =>
+    console.log(`%c${LOG_PREFIX} ✅ [${scope}]%c ${msg}`, "color:#34d399;font-weight:bold;", "color:inherit;", data ?? ""),
+  warn:    (scope: string, msg: string, data?: any) =>
+    console.warn(`%c${LOG_PREFIX} ⚠️  [${scope}]%c ${msg}`, "color:#fbbf24;font-weight:bold;", "color:inherit;", data ?? ""),
+  error:   (scope: string, msg: string, data?: any) =>
+    console.error(`%c${LOG_PREFIX} ❌ [${scope}]%c ${msg}`, "color:#f87171;font-weight:bold;", "color:inherit;", data ?? ""),
+  perf:    (scope: string, label: string, ms: number) =>
+    console.log(`%c${LOG_PREFIX} ⏱️  [${scope}]%c ${label} — ${ms.toFixed(2)}ms`, "color:#a78bfa;font-weight:bold;", "color:inherit;"),
+  event:   (scope: string, action: string, data?: any) =>
+    console.log(`%c${LOG_PREFIX} 🎯 [${scope}]%c ACTION → ${action}`, "color:#f472b6;font-weight:bold;", "color:inherit;", data ?? ""),
+  auth:    (msg: string, data?: any) =>
+    console.log(`%c${LOG_PREFIX} 🔐 [AUTH]%c ${msg}`, "color:#c084fc;font-weight:bold;", "color:inherit;", data ?? ""),
+  oauth:   (msg: string, data?: any) =>
+    console.log(`%c${LOG_PREFIX} 🌐 [OAUTH]%c ${msg}`, "color:#22d3ee;font-weight:bold;", "color:inherit;", data ?? ""),
+  nav:     (dest: string) =>
+    console.log(`%c${LOG_PREFIX} 🧭 [NAV]%c Navegando → ${dest}`, "color:#fb923c;font-weight:bold;", "color:inherit;"),
+  mount:   (c: string) =>
+    console.log(`%c${LOG_PREFIX} 🔧 [MOUNT]%c <${c}> renderizado`, "color:#38bdf8;font-weight:bold;", "color:inherit;"),
+  unmount: (c: string) =>
+    console.log(`%c${LOG_PREFIX} 🗑️  [UNMOUNT]%c <${c}> destruído`, "color:#94a3b8;font-weight:bold;", "color:inherit;"),
+  sep:     () => console.log("%c" + "─".repeat(60), "color:#374151;"),
 };
 
 // ============================================================
 // 🌐 API BASE URL — fonte única de verdade
 //
-// ⚠️  CORREÇÃO CRÍTICA:
-//     O original usava fetch("/api/auth/login") — caminho relativo.
-//     Em produção isso chama nexaspark.com.br/api/auth/login
-//     que não existe — o backend está no Railway.
-//
-// ✅  CORREÇÃO: NEXT_PUBLIC_API_URL definida no Vercel aponta
-//     para https://api-certificados-digitais-production.up.railway.app
-//     Em desenvolvimento, fallback para localhost:8080.
+// ⚠️  NEXT_PUBLIC_API_URL deve estar configurada na Vercel:
+//     https://api-certificados-digitais-production.up.railway.app
+//     Em desenvolvimento usa localhost:8080 como fallback.
 // ============================================================
 const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8080";
 
@@ -39,38 +51,115 @@ const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8080";
 // 🔐 LOGIN PAGE
 // ============================================================
 export default function Login() {
-  const router = useRouter();
+  const router        = useRouter();
+  const searchParams  = useSearchParams();
 
-  const [email,    setEmail]    = useState("");
-  const [password, setPassword] = useState("");
-  const [showPass, setShowPass] = useState(false);
-  const [loading,  setLoading]  = useState(false);
-  const [error,    setError]    = useState("");
-  const [focused,  setFocused]  = useState<"email" | "password" | null>(null);
-  const [attempts, setAttempts] = useState(0);
+  const [email,       setEmail]       = useState("");
+  const [password,    setPassword]    = useState("");
+  const [showPass,    setShowPass]    = useState(false);
+  const [loading,     setLoading]     = useState(false);
+  const [loadingGoogle, setLoadingGoogle] = useState(false);
+  const [error,       setError]       = useState("");
+  const [focused,     setFocused]     = useState<"email" | "password" | null>(null);
+  const [attempts,    setAttempts]    = useState(0);
 
   const emailRef = useRef<HTMLInputElement>(null);
   const t0Ref    = useRef(0);
 
+  // ============================================================
+  // 🔍 DETECTA ERROS OAUTH VINDOS DO BACKEND
+  //
+  // ⚠️  Quando o Google OAuth falha, o backend redireciona para:
+  //     /login?error=google_auth_failed
+  //     /login?error=oauth_failed&code=NO_USER
+  //     etc.
+  //
+  // Capturamos aqui e exibimos mensagem amigável.
+  // ============================================================
   useEffect(() => {
+    logger.sep();
     logger.mount("Login");
-    logger.info("AUTH", "Página de login carregada", { apiUrl: API_URL });
+    logger.info("INIT", "Página de login carregada", {
+      apiUrl:    API_URL,
+      timestamp: new Date().toISOString(),
+    });
 
-    const token = localStorage.getItem("token");
-    if (token) {
-      logger.auth("Token existente detectado — redirecionando para dashboard");
-      logger.nav("/dashboard");
-      router.replace("/dashboard");
-      return;
+    // ── Verifica erros OAuth na URL ──────────────────────────
+    const oauthError = searchParams.get("error");
+    if (oauthError) {
+      logger.oauth("Erro OAuth detectado na URL", { error: oauthError });
+
+      const errorMessages: Record<string, string> = {
+        google_auth_failed:   "Autenticação com Google falhou. Tente novamente.",
+        oauth_failed:         "Erro no fluxo OAuth. Tente novamente.",
+        oauth_invalid_user:   "Perfil Google inválido. Tente com outra conta.",
+        oauth_server_error:   "Erro interno no servidor OAuth. Tente mais tarde.",
+        user_not_found:       "Usuário não encontrado após autenticação Google.",
+        token_error:          "Erro ao gerar sessão. Tente novamente.",
+        invalid_token:        "Token inválido recebido. Tente novamente.",
+      };
+
+      const friendlyMsg = errorMessages[oauthError] || `Erro de autenticação: ${oauthError}`;
+      setError(friendlyMsg);
+      logger.error("OAUTH", `Erro mapeado: ${friendlyMsg}`, { oauthError });
+
+      // ⚠️  Limpa o query param da URL sem reload da página
+      //     Evita que o erro reapareça ao recarregar
+      window.history.replaceState({}, "", "/login");
+      logger.info("OAUTH", "Query param ?error removido da URL via replaceState");
     }
 
-    logger.auth("Nenhuma sessão ativa — exibindo formulário de login");
-    setTimeout(() => emailRef.current?.focus(), 600);
+    // ── Verifica sessão existente ────────────────────────────
+    const token = localStorage.getItem("token");
+    if (token) {
+      logger.auth("Token existente detectado — verificando validade antes de redirecionar");
 
-    return () => logger.unmount("Login");
+      // Decodifica payload sem verificar assinatura (só para log)
+      try {
+        const payload = JSON.parse(atob(token.split(".")[1]));
+        const expiresAt = new Date(payload.exp * 1000);
+        const isExpired = Date.now() > payload.exp * 1000;
+
+        logger.auth("Token decodificado", {
+          userId:    payload.id,
+          email:     payload.email,
+          provider:  payload.auth_provider || "local",
+          expiresAt: expiresAt.toISOString(),
+          isExpired,
+        });
+
+        if (isExpired) {
+          logger.warn("AUTH", "Token expirado — removendo e exibindo formulário");
+          localStorage.removeItem("token");
+        } else {
+          logger.nav("/dashboard");
+          router.replace("/dashboard");
+          return;
+        }
+      } catch (decodeErr) {
+        logger.warn("AUTH", "Token malformado — removendo", { error: String(decodeErr) });
+        localStorage.removeItem("token");
+      }
+    } else {
+      logger.auth("Nenhuma sessão ativa — exibindo formulário");
+    }
+
+    // Foca o campo email após animação de entrada
+    const focusTimer = setTimeout(() => {
+      emailRef.current?.focus();
+      logger.info("UX", "Focus automático no campo email");
+    }, 600);
+
+    return () => {
+      clearTimeout(focusTimer);
+      logger.unmount("Login");
+      logger.sep();
+    };
   }, []);
 
-  // ── Validação client-side ────────────────────────────────
+  // ============================================================
+  // ✅ VALIDAÇÃO CLIENT-SIDE
+  // ============================================================
   function validate(): string | null {
     if (!email.trim())                return "Informe seu e-mail.";
     if (!/\S+@\S+\.\S+/.test(email)) return "E-mail inválido.";
@@ -79,7 +168,9 @@ export default function Login() {
     return null;
   }
 
-  // ── Submit ───────────────────────────────────────────────
+  // ============================================================
+  // 🔑 SUBMIT — Login local email + senha
+  // ============================================================
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
     setError("");
@@ -94,33 +185,80 @@ export default function Login() {
     t0Ref.current = performance.now();
     setLoading(true);
     setAttempts((n) => n + 1);
+    const currentAttempt = attempts + 1;
 
-    logger.auth("Tentativa de login iniciada", { email, attempt: attempts + 1 });
-    logger.event("AUTH", "Form submetido", { email });
-    logger.info("AUTH", "Chamando API", { url: `${API_URL}/api/auth/login` });
+    logger.sep();
+    logger.auth("Iniciando tentativa de login", {
+      email:   email.trim().toLowerCase(),
+      attempt: currentAttempt,
+      apiUrl:  `${API_URL}/api/auth/login`,
+    });
 
     try {
+      logger.info("AUTH:HTTP", "Enviando POST /api/auth/login...");
+      const tFetch = performance.now();
+
       const res = await fetch(`${API_URL}/api/auth/login`, {
         method:  "POST",
-        headers: { "Content-Type": "application/json" },
-        body:    JSON.stringify({ email: email.trim().toLowerCase(), password }),
+        headers: {
+          "Content-Type": "application/json",
+          // ⚠️  X-Request-ID para correlacionar com os logs do backend
+          "X-Request-ID": `login_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+        },
+        body: JSON.stringify({
+          email:    email.trim().toLowerCase(),
+          password,
+        }),
       });
 
-      const data = await res.json();
-      const ms   = performance.now() - t0Ref.current;
+      const fetchMs = performance.now() - tFetch;
+      logger.perf("AUTH:HTTP", "Resposta HTTP recebida", fetchMs);
+      logger.info("AUTH:HTTP", "Status da resposta", {
+        status:     res.status,
+        statusText: res.statusText,
+        ok:         res.ok,
+      });
 
-      logger.perf("AUTH", "Resposta do servidor recebida", ms);
-      logger.info("AUTH", "Resposta parseada", { status: res.status, ok: res.ok });
+      // ── Parse JSON ───────────────────────────────────────
+      let data: any = {};
+      try {
+        data = await res.json();
+        logger.info("AUTH:PARSE", "Body parseado", {
+          hasToken:   !!(data.token || data.data?.token),
+          hasError:   !!data.error,
+          hasErrors:  Array.isArray(data.errors),
+          keys:       Object.keys(data),
+        });
+      } catch (parseErr) {
+        logger.error("AUTH:PARSE", "JSON inválido na resposta", { parseErr: String(parseErr) });
+        throw new Error("Resposta inválida do servidor");
+      }
 
+      const totalMs = performance.now() - t0Ref.current;
+
+      // ── Trata erros HTTP ─────────────────────────────────
       if (!res.ok) {
-        // ✅ Tratamento defensivo — cobre todos os formatos de erro do backend
         const msg =
           typeof data?.error   === "string" ? data.error   :
           typeof data?.message === "string" ? data.message :
           Array.isArray(data?.errors)       ? data.errors.map((e: any) => e.message || e).join(" • ") :
           "Credenciais inválidas. Verifique e tente novamente.";
 
-        logger.warn("AUTH", `Login rejeitado: ${msg}`, { status: res.status });
+        logger.warn("AUTH", "Login rejeitado pelo servidor", {
+          status:  res.status,
+          code:    data?.code,
+          message: msg,
+          attempt: currentAttempt,
+          totalMs: totalMs.toFixed(2) + "ms",
+        });
+
+        // ⚠️  Caso especial: conta OAuth sem senha
+        if (data?.code === "OAUTH_ACCOUNT_NO_PASSWORD") {
+          logger.oauth("Conta OAuth detectada — orientando usuário", {
+            provider: data?.provider,
+          });
+        }
+
         setError(msg);
         setLoading(false);
         return;
@@ -130,41 +268,87 @@ export default function Login() {
       const token = data.token || data.data?.token;
 
       if (!token) {
-        logger.error("AUTH", "Token ausente na resposta de sucesso", data);
+        logger.error("AUTH", "Resposta OK mas sem token", { data });
         setError("Erro inesperado — tente novamente.");
         setLoading(false);
         return;
       }
 
-      logger.auth("Login bem-sucedido — armazenando token");
+      // Decodifica payload para log
+      try {
+        const payload = JSON.parse(atob(token.split(".")[1]));
+        logger.auth("Token recebido e decodificado", {
+          userId:    payload.id,
+          email:     payload.email,
+          provider:  payload.auth_provider || "local",
+          expiresAt: new Date(payload.exp * 1000).toISOString(),
+          tokenSize: token.length,
+        });
+      } catch {
+        logger.warn("AUTH", "Token recebido mas não decodificável para log");
+      }
+
+      logger.auth("Armazenando token...");
       localStorage.setItem("token", token);
       document.cookie = `token=${token}; path=/; SameSite=Lax`;
+      logger.success("AUTH", "Token armazenado — localStorage + cookie ✅");
 
-      logger.success("AUTH", "Token armazenado ✅");
+      logger.perf("LOGIN:FLOW", "Login completo (submit → armazenamento)", totalMs);
       logger.nav("/dashboard");
-      logger.perf("LOGIN-FLOW", "Login completo (form → dashboard)", ms);
+      logger.sep();
 
       router.replace("/dashboard");
 
     } catch (err: any) {
-      const ms = performance.now() - t0Ref.current;
-      logger.error("AUTH", `Erro de rede: ${err.message}`, { ms });
-      setError("Não foi possível conectar ao servidor. Verifique sua conexão e tente novamente.");
+      const totalMs = performance.now() - t0Ref.current;
+      logger.error("AUTH:NETWORK", `Erro de rede após ${totalMs.toFixed(2)}ms`, {
+        message: err.message,
+        type:    err.name,
+      });
+      setError("Não foi possível conectar ao servidor. Verifique sua conexão.");
       setLoading(false);
     }
   }
 
-  // ── Google OAuth ─────────────────────────────────────────
-  // ✅ PREPARADO — redireciona para o backend quando ativado
+  // ============================================================
+  // 🌐 GOOGLE OAUTH — Login via Google
+  //
+  // ⚠️  FLUXO:
+  //   1. Browser redireciona para o backend Railway
+  //   2. Backend → Passport → Google accounts.google.com
+  //   3. Google → callback no backend
+  //   4. Backend gera JWT → redireciona para /auth/callback?token=xxx
+  //   5. /auth/callback salva token e redireciona para /dashboard
+  //
+  // ⚠️  window.location.href e não router.push() pois é
+  //     redirect externo para o backend (domínio diferente).
+  // ============================================================
   function handleGoogleLogin() {
-    logger.auth("Google OAuth iniciado");
-    logger.event("AUTH", "Usuário clicou em Entrar com Google");
-    logger.warn("AUTH", "Google OAuth ainda não configurado no backend — aguardando integração");
-    // TODO: descomentar quando Google OAuth estiver configurado no backend
-    // window.location.href = `${API_URL}/api/auth/google`;
+    logger.sep();
+    logger.oauth("Iniciando fluxo OAuth 2.0 Google...");
+    logger.oauth("Configurações do fluxo", {
+      backendUrl:    API_URL,
+      oauthEndpoint: `${API_URL}/api/auth/google`,
+      callbackPage:  `${window.location.origin}/auth/callback`,
+      timestamp:     new Date().toISOString(),
+    });
+
+    setLoadingGoogle(true);
+    logger.event("AUTH:GOOGLE", "Usuário clicou em Continuar com Google");
+
+    // ⚠️  Pequeno delay para o estado de loading renderizar
+    //     antes do redirect acontecer
+    setTimeout(() => {
+      logger.oauth("Redirecionando para backend OAuth...", {
+        url: `${API_URL}/api/auth/google`,
+      });
+      window.location.href = `${API_URL}/api/auth/google`;
+    }, 150);
   }
 
-  // ── Render ───────────────────────────────────────────────
+  // ============================================================
+  // 🎨 RENDER
+  // ============================================================
   return (
     <div className="min-h-screen bg-black flex items-center justify-center px-4 relative overflow-hidden">
 
@@ -249,7 +433,8 @@ export default function Login() {
                 onFocus={() => { setFocused("email"); logger.event("UX", "Campo email focado"); }}
                 onBlur={() => setFocused(null)}
                 autoComplete="email"
-                className={`w-full bg-white/[0.04] border rounded-lg px-3 pt-5 pb-2.5 text-sm text-white outline-none transition-all duration-200 ${
+                disabled={loading || loadingGoogle}
+                className={`w-full bg-white/[0.04] border rounded-lg px-3 pt-5 pb-2.5 text-sm text-white outline-none transition-all duration-200 disabled:opacity-50 disabled:cursor-not-allowed ${
                   focused === "email"
                     ? "border-emerald-500/60"
                     : "border-white/[0.08] hover:border-white/[0.15]"
@@ -277,7 +462,8 @@ export default function Login() {
                 onFocus={() => { setFocused("password"); logger.event("UX", "Campo senha focado"); }}
                 onBlur={() => setFocused(null)}
                 autoComplete="current-password"
-                className={`w-full bg-white/[0.04] border rounded-lg px-3 pt-5 pb-2.5 pr-10 text-sm text-white outline-none transition-all duration-200 ${
+                disabled={loading || loadingGoogle}
+                className={`w-full bg-white/[0.04] border rounded-lg px-3 pt-5 pb-2.5 pr-10 text-sm text-white outline-none transition-all duration-200 disabled:opacity-50 disabled:cursor-not-allowed ${
                   focused === "password"
                     ? "border-emerald-500/60"
                     : "border-white/[0.08] hover:border-white/[0.15]"
@@ -324,7 +510,7 @@ export default function Login() {
             {/* BOTÃO ENTRAR */}
             <button
               type="submit"
-              disabled={loading}
+              disabled={loading || loadingGoogle}
               onClick={() => !loading && logger.event("AUTH", "Botão Entrar clicado")}
               className="w-full bg-emerald-500 hover:bg-emerald-400 disabled:bg-emerald-900 disabled:cursor-not-allowed text-black font-semibold py-3 rounded-lg transition-all duration-200 hover:scale-[1.01] active:scale-[0.99] text-sm flex items-center justify-center gap-2"
             >
@@ -335,9 +521,7 @@ export default function Login() {
                   </svg>
                   Verificando...
                 </>
-              ) : (
-                "Entrar"
-              )}
+              ) : "Entrar"}
             </button>
 
           </form>
@@ -353,17 +537,29 @@ export default function Login() {
           <button
             type="button"
             onClick={handleGoogleLogin}
-            className="w-full flex items-center justify-center gap-3 border border-white/[0.08] hover:border-white/[0.18] bg-white/[0.03] hover:bg-white/[0.06] text-white text-sm py-3 rounded-lg transition-all duration-200 group relative z-10 cursor-pointer"
+            disabled={loading || loadingGoogle}
+            className="w-full flex items-center justify-center gap-3 border border-white/[0.08] hover:border-white/[0.18] bg-white/[0.03] hover:bg-white/[0.06] disabled:opacity-50 disabled:cursor-not-allowed text-white text-sm py-3 rounded-lg transition-all duration-200 group relative z-10 cursor-pointer"
           >
-            <svg width="16" height="16" viewBox="0 0 24 24">
-              <path d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z" fill="#4285F4"/>
-              <path d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z" fill="#34A853"/>
-              <path d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.07H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.93l2.85-2.22.81-.62z" fill="#FBBC05"/>
-              <path d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z" fill="#EA4335"/>
-            </svg>
-            <span className="text-gray-300 group-hover:text-white transition-colors">
-              Continuar com Google
-            </span>
+            {loadingGoogle ? (
+              <>
+                <svg className="animate-spin" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#9ca3af" strokeWidth="2.5">
+                  <path d="M21 12a9 9 0 1 1-6.219-8.56"/>
+                </svg>
+                <span className="text-gray-400">Redirecionando para Google...</span>
+              </>
+            ) : (
+              <>
+                <svg width="16" height="16" viewBox="0 0 24 24">
+                  <path d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z" fill="#4285F4"/>
+                  <path d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z" fill="#34A853"/>
+                  <path d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.07H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.93l2.85-2.22.81-.62z" fill="#FBBC05"/>
+                  <path d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z" fill="#EA4335"/>
+                </svg>
+                <span className="text-gray-300 group-hover:text-white transition-colors">
+                  Continuar com Google
+                </span>
+              </>
+            )}
           </button>
 
         </div>
