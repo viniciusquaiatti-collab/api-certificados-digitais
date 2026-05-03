@@ -22,27 +22,40 @@ const logger = {
 };
 
 // ============================================================
+// 🌐 API BASE URL — fonte única de verdade
+//
+// ⚠️  CORREÇÃO CRÍTICA:
+//     O original usava fetch("/api/auth/login") — caminho relativo.
+//     Em produção isso chama nexaspark.com.br/api/auth/login
+//     que não existe — o backend está no Railway.
+//
+// ✅  CORREÇÃO: NEXT_PUBLIC_API_URL definida no Vercel aponta
+//     para https://api-certificados-digitais-production.up.railway.app
+//     Em desenvolvimento, fallback para localhost:8080.
+// ============================================================
+const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8080";
+
+// ============================================================
 // 🔐 LOGIN PAGE
 // ============================================================
 export default function Login() {
   const router = useRouter();
 
-  const [email, setEmail]         = useState("");
-  const [password, setPassword]   = useState("");
-  const [showPass, setShowPass]    = useState(false);
-  const [loading, setLoading]      = useState(false);
-  const [error, setError]          = useState("");
-  const [focused, setFocused]      = useState<"email" | "password" | null>(null);
-  const [attempts, setAttempts]    = useState(0);
+  const [email,    setEmail]    = useState("");
+  const [password, setPassword] = useState("");
+  const [showPass, setShowPass] = useState(false);
+  const [loading,  setLoading]  = useState(false);
+  const [error,    setError]    = useState("");
+  const [focused,  setFocused]  = useState<"email" | "password" | null>(null);
+  const [attempts, setAttempts] = useState(0);
 
-  const emailRef    = useRef<HTMLInputElement>(null);
-  const t0Ref       = useRef(0);
+  const emailRef = useRef<HTMLInputElement>(null);
+  const t0Ref    = useRef(0);
 
   useEffect(() => {
     logger.mount("Login");
-    logger.info("AUTH", "Página de login carregada");
+    logger.info("AUTH", "Página de login carregada", { apiUrl: API_URL });
 
-    // ✅ Se já tem token, redireciona direto
     const token = localStorage.getItem("token");
     if (token) {
       logger.auth("Token existente detectado — redirecionando para dashboard");
@@ -52,8 +65,6 @@ export default function Login() {
     }
 
     logger.auth("Nenhuma sessão ativa — exibindo formulário de login");
-
-    // Foco automático no campo email
     setTimeout(() => emailRef.current?.focus(), 600);
 
     return () => logger.unmount("Login");
@@ -61,10 +72,10 @@ export default function Login() {
 
   // ── Validação client-side ────────────────────────────────
   function validate(): string | null {
-    if (!email.trim())           return "Informe seu e-mail.";
+    if (!email.trim())                return "Informe seu e-mail.";
     if (!/\S+@\S+\.\S+/.test(email)) return "E-mail inválido.";
-    if (!password)               return "Informe sua senha.";
-    if (password.length < 6)    return "Senha deve ter no mínimo 6 caracteres.";
+    if (!password)                    return "Informe sua senha.";
+    if (password.length < 8)         return "Senha deve ter no mínimo 8 caracteres.";
     return null;
   }
 
@@ -86,29 +97,48 @@ export default function Login() {
 
     logger.auth("Tentativa de login iniciada", { email, attempt: attempts + 1 });
     logger.event("AUTH", "Form submetido", { email });
+    logger.info("AUTH", "Chamando API", { url: `${API_URL}/api/auth/login` });
 
     try {
-      const res = await fetch("/api/auth/login", {
+      const res = await fetch(`${API_URL}/api/auth/login`, {
         method:  "POST",
         headers: { "Content-Type": "application/json" },
-        body:    JSON.stringify({ email, password }),
+        body:    JSON.stringify({ email: email.trim().toLowerCase(), password }),
       });
 
       const data = await res.json();
       const ms   = performance.now() - t0Ref.current;
 
       logger.perf("AUTH", "Resposta do servidor recebida", ms);
+      logger.info("AUTH", "Resposta parseada", { status: res.status, ok: res.ok });
 
       if (!res.ok) {
-        logger.warn("AUTH", `Login rejeitado: ${data.message || res.status}`, { status: res.status });
-        setError(data.message || "Credenciais inválidas. Verifique e tente novamente.");
+        // ✅ Tratamento defensivo — cobre todos os formatos de erro do backend
+        const msg =
+          typeof data?.error   === "string" ? data.error   :
+          typeof data?.message === "string" ? data.message :
+          Array.isArray(data?.errors)       ? data.errors.map((e: any) => e.message || e).join(" • ") :
+          "Credenciais inválidas. Verifique e tente novamente.";
+
+        logger.warn("AUTH", `Login rejeitado: ${msg}`, { status: res.status });
+        setError(msg);
         setLoading(false);
         return;
       }
 
-      // ✅ Sucesso
+      // ── Sucesso ──────────────────────────────────────────
+      const token = data.token || data.data?.token;
+
+      if (!token) {
+        logger.error("AUTH", "Token ausente na resposta de sucesso", data);
+        setError("Erro inesperado — tente novamente.");
+        setLoading(false);
+        return;
+      }
+
       logger.auth("Login bem-sucedido — armazenando token");
-      localStorage.setItem("token", data.token);
+      localStorage.setItem("token", token);
+      document.cookie = `token=${token}; path=/; SameSite=Lax`;
 
       logger.success("AUTH", "Token armazenado ✅");
       logger.nav("/dashboard");
@@ -118,20 +148,21 @@ export default function Login() {
 
     } catch (err: any) {
       const ms = performance.now() - t0Ref.current;
-      logger.error("AUTH", `Erro de rede ou servidor: ${err.message}`, { err, ms });
-      setError("Não foi possível conectar ao servidor. Tente novamente.");
+      logger.error("AUTH", `Erro de rede: ${err.message}`, { ms });
+      setError("Não foi possível conectar ao servidor. Verifique sua conexão e tente novamente.");
       setLoading(false);
     }
   }
 
-  // ── Google OAuth (preparado — ativa quando backend estiver pronto) ──
+  // ── Google OAuth ─────────────────────────────────────────
+  // ✅ PREPARADO — redireciona para o backend quando ativado
   function handleGoogleLogin() {
-  logger.auth("Google OAuth iniciado");
-  logger.event("AUTH", "Usuário clicou em Entrar com Google");
-  logger.warn("AUTH", "Google OAuth ainda não configurado no backend — aguardando integração");
-  // TODO: quando backend estiver pronto, descomentar:
-  // window.location.href = "/api/auth/google";
-}
+    logger.auth("Google OAuth iniciado");
+    logger.event("AUTH", "Usuário clicou em Entrar com Google");
+    logger.warn("AUTH", "Google OAuth ainda não configurado no backend — aguardando integração");
+    // TODO: descomentar quando Google OAuth estiver configurado no backend
+    // window.location.href = `${API_URL}/api/auth/google`;
+  }
 
   // ── Render ───────────────────────────────────────────────
   return (
@@ -140,18 +171,14 @@ export default function Login() {
       {/* BACKGROUND GLOW AMBIENT */}
       <div
         className="absolute inset-0 pointer-events-none"
-        style={{
-          background: "radial-gradient(ellipse 80% 60% at 50% 0%, rgba(16,185,129,0.07) 0%, transparent 70%)",
-        }}
+        style={{ background: "radial-gradient(ellipse 80% 60% at 50% 0%, rgba(16,185,129,0.07) 0%, transparent 70%)" }}
       />
       <div
         className="absolute inset-0 pointer-events-none"
-        style={{
-          background: "radial-gradient(ellipse 60% 40% at 50% 100%, rgba(16,185,129,0.04) 0%, transparent 70%)",
-        }}
+        style={{ background: "radial-gradient(ellipse 60% 40% at 50% 100%, rgba(16,185,129,0.04) 0%, transparent 70%)" }}
       />
 
-      {/* GRID PATTERN SUTIL */}
+      {/* GRID PATTERN */}
       <div
         className="absolute inset-0 pointer-events-none opacity-[0.025]"
         style={{
@@ -160,7 +187,7 @@ export default function Login() {
         }}
       />
 
-      {/* LOGO NO TOPO */}
+      {/* LOGO */}
       <motion.div
         initial={{ opacity: 0, y: -12 }}
         animate={{ opacity: 1, y: 0 }}
@@ -182,11 +209,10 @@ export default function Login() {
         transition={{ duration: 0.6, delay: 0.1, ease: [0.22, 1, 0.36, 1] }}
         className="w-full max-w-sm relative z-10"
       >
-        {/* CARD CONTAINER */}
         <div
-  className="rounded-2xl border border-white/[0.08] p-8 relative z-10"
-  style={{ background: "rgba(255,255,255,0.03)", backdropFilter: "blur(20px)" }}
->
+          className="rounded-2xl border border-white/[0.08] p-8 relative z-10"
+          style={{ background: "rgba(255,255,255,0.03)", backdropFilter: "blur(20px)" }}
+        >
 
           {/* HEADER */}
           <div className="mb-8">
@@ -257,7 +283,6 @@ export default function Login() {
                     : "border-white/[0.08] hover:border-white/[0.15]"
                 }`}
               />
-              {/* TOGGLE SENHA */}
               <button
                 type="button"
                 onClick={() => { setShowPass((v) => !v); logger.event("UX", `Senha ${showPass ? "ocultada" : "exibida"}`); }}
@@ -278,7 +303,7 @@ export default function Login() {
               </button>
             </div>
 
-            {/* MENSAGEM DE ERRO */}
+            {/* ERRO */}
             <AnimatePresence>
               {error && (
                 <motion.div
@@ -288,7 +313,7 @@ export default function Login() {
                   transition={{ duration: 0.2 }}
                   className="flex items-start gap-2 p-3 rounded-lg bg-red-950/40 border border-red-900/40"
                 >
-                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#f87171" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="mt-0.5 flex-shrink-0">
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#f87171" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="mt-0.5 shrink-0">
                     <circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/>
                   </svg>
                   <p className="text-red-400 text-xs leading-relaxed">{error}</p>
@@ -324,17 +349,12 @@ export default function Login() {
             <div className="flex-1 h-px bg-white/[0.06]" />
           </div>
 
-          {/* GOOGLE LOGIN
-              ✅ PREPARADO — botão funcional visualmente.
-              🔧 Para ativar: configurar Google OAuth no backend
-                 e descomentar a linha no handleGoogleLogin()
-          */}
+          {/* GOOGLE LOGIN */}
           <button
-  type="button"
-  onClick={handleGoogleLogin}
-  className="w-full flex items-center justify-center gap-3 border border-white/[0.08] hover:border-white/[0.18] bg-white/[0.03] hover:bg-white/[0.06] text-white text-sm py-3 rounded-lg transition-all duration-200 group relative z-10 cursor-pointer"
->
-            {/* Logo Google SVG oficial */}
+            type="button"
+            onClick={handleGoogleLogin}
+            className="w-full flex items-center justify-center gap-3 border border-white/[0.08] hover:border-white/[0.18] bg-white/[0.03] hover:bg-white/[0.06] text-white text-sm py-3 rounded-lg transition-all duration-200 group relative z-10 cursor-pointer"
+          >
             <svg width="16" height="16" viewBox="0 0 24 24">
               <path d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z" fill="#4285F4"/>
               <path d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z" fill="#34A853"/>
@@ -348,7 +368,7 @@ export default function Login() {
 
         </div>
 
-        {/* LINKS ABAIXO DO CARD */}
+        {/* LINKS */}
         <div className="mt-6 text-center space-y-2">
           <p className="text-gray-600 text-xs">
             Problemas com acesso?{" "}
@@ -362,9 +382,7 @@ export default function Login() {
               Falar com suporte
             </a>
           </p>
-          <p className="text-gray-700 text-xs">
-            © {new Date().getFullYear()} NexaSpark
-          </p>
+          <p className="text-gray-700 text-xs">© {new Date().getFullYear()} NexaSpark</p>
         </div>
 
       </motion.div>

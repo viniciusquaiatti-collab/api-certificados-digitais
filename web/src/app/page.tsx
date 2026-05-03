@@ -61,7 +61,7 @@ const logger = {
 // ✨ PARTICLES — Three.js GPU Particles
 // ============================================================
 function Particles({ mouse }: { mouse: React.MutableRefObject<{ x: number; y: number }> }) {
-  const ref = useRef<any>();
+  const ref = useRef<any>(null);
 
   // ✅ positions em useRef — calculado uma única vez, nunca recria
   const positions = useRef(
