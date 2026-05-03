@@ -2,21 +2,35 @@
 // ============================================================
 // 🏢 NexaSpark API — Entry Point
 // Certificação Digital Enterprise
+//
+// ⚠️  ADIÇÕES nesta versão:
+//   - express-session: necessário para o Passport funcionar
+//     durante o redirect cycle do OAuth. TTL de 5 min.
+//   - passport.initialize() + passport.session(): middleware
+//     do Passport registrado após session e body parsers.
+//   - adminRoutes: estava importado mas nunca registrado —
+//     corrigido com app.use('/api/admin', adminRoutes).
+//   - Log de inicialização de cada módulo OAuth.
 // ============================================================
 
 require('dotenv').config();
 
-const express    = require('express');
-const cors       = require('cors');
-const path       = require('path');
-const rateLimit  = require('express-rate-limit');
-const db         = require('./src/database/db');
-const adminRoutes = require('./src/routes/adminRoutes');
+const express   = require('express');
+const cors      = require('cors');
+const path      = require('path');
+const rateLimit = require('express-rate-limit');
+const session   = require('express-session');   // ← NOVO: OAuth session
+const db        = require('./src/database/db');
 
+// ── Passport — carregado após dotenv para ter acesso às env vars ──
+// ⚠️  A ordem importa: dotenv → require passport
+//     O passport.js lê process.env.GOOGLE_CLIENT_ID no require
+const passport = require('./src/config/passport'); // ← NOVO
 
-// ── Rotas ────────────────────────────────────────────────────
+// ── Rotas ─────────────────────────────────────────────────────
 const authRoutes        = require('./src/routes/authRoutes');
 const certificateRoutes = require('./src/routes/certificateRoutes');
+const adminRoutes        = require('./src/routes/adminRoutes');
 
 const app  = express();
 const PORT = process.env.PORT || 8080;
@@ -48,10 +62,10 @@ const logger = {
     c.gray(`IP: ${ip} | ID: ${id}`)
   ),
   response: (method, url, status, ms, id) => {
-    const statusStr  = String(status);
+    const statusStr   = String(status);
     const statusColor =
-      status < 300 ? c.green(statusStr) :
-      status < 400 ? c.cyan(statusStr)  :
+      status < 300 ? c.green(statusStr)  :
+      status < 400 ? c.cyan(statusStr)   :
       status < 500 ? c.yellow(statusStr) : c.red(statusStr);
     console.log(
       c.magenta(`📤 [RES]`),
@@ -61,10 +75,10 @@ const logger = {
       c.gray(`${ms}ms | ID: ${id}`)
     );
   },
-  sep:     ()              => console.log(c.gray('═'.repeat(60))),
-  subsep:  ()              => console.log(c.gray('─'.repeat(60))),
-  sec:     (msg, data)     => console.warn(c.red(`🚨 [SECURITY]`), msg, data !== undefined ? c.gray(JSON.stringify(data)) : ''),
-  perf:    (label, ms)     => console.log(c.magenta(`⏱️  [PERF]`), `${label} — ${c.bold(ms + 'ms')}`),
+  sep:    ()           => console.log(c.gray('═'.repeat(60))),
+  subsep: ()           => console.log(c.gray('─'.repeat(60))),
+  sec:    (msg, data)  => console.warn(c.red(`🚨 [SECURITY]`), msg, data !== undefined ? c.gray(JSON.stringify(data)) : ''),
+  perf:   (label, ms)  => console.log(c.magenta(`⏱️  [PERF]`), `${label} — ${c.bold(ms + 'ms')}`),
 };
 
 // ============================================================
@@ -74,15 +88,25 @@ logger.sep();
 console.log(c.bold(c.green('  🚀 NexaSpark API — Inicializando')));
 console.log(c.gray(`  Node.js ${process.version} | PID ${process.pid}`));
 logger.sep();
-logger.info('APP', 'NODE_ENV', process.env.NODE_ENV || 'development');
-logger.info('APP', 'PORT', PORT);
+logger.info('APP', 'NODE_ENV',  process.env.NODE_ENV || 'development');
+logger.info('APP', 'PORT',      PORT);
 logger.info('APP', 'Timestamp', new Date().toISOString());
+
+// ⚠️  Log das variáveis OAuth na inicialização
+//     Permite detectar variáveis ausentes ANTES do primeiro login
+console.log(c.cyan(`ℹ️  [APP:OAUTH_ENV]`), c.gray(JSON.stringify({
+  GOOGLE_CLIENT_ID:     process.env.GOOGLE_CLIENT_ID     ? process.env.GOOGLE_CLIENT_ID.substring(0, 12) + '...'  : '❌ AUSENTE',
+  GOOGLE_CLIENT_SECRET: process.env.GOOGLE_CLIENT_SECRET ? '[REDACTED ✅]'                                         : '❌ AUSENTE',
+  GOOGLE_CALLBACK_URL:  process.env.GOOGLE_CALLBACK_URL  || '❌ AUSENTE',
+  FRONTEND_URL:         process.env.FRONTEND_URL          || '❌ AUSENTE',
+})));
+
 logger.subsep();
 
 // ============================================================
 // ⚙️  TRUST PROXY
-// Necessário para Railway/Heroku — garante req.ip correto
-// atrás de reverse proxy (sem isso, req.ip seria sempre 127.0.0.1)
+// Necessário para Railway — garante req.ip correto atrás
+// do reverse proxy (sem isso, req.ip seria sempre 127.0.0.1).
 // ============================================================
 app.set('trust proxy', 1);
 logger.success('APP', 'trust proxy configurado');
@@ -90,29 +114,27 @@ logger.success('APP', 'trust proxy configurado');
 // ============================================================
 // 🌐 CORS
 //
-// ⚠️  PROBLEMA ORIGINAL: app.use(cors()) sem restrição de origem
-//     aceita requisições de qualquer domínio — inseguro em produção.
-//
-// ✅  CORREÇÃO: whitelist explícita de origens permitidas.
-//     Em desenvolvimento aceita localhost. Em produção, só o domínio real.
-//     Qualquer outra origem recebe 403 automaticamente pelo cors().
+// ⚠️  Whitelist explícita de origens permitidas.
+//     OAuth requer que o Google consiga redirecionar para o
+//     backend — mas o CORS só se aplica a requisições browser
+//     com Origin header. O redirect do Google não tem Origin,
+//     então não é bloqueado pelo CORS (passa pelo !origin check).
 // ============================================================
 const ALLOWED_ORIGINS = (process.env.ALLOWED_ORIGINS || '')
   .split(',')
   .map((o) => o.trim())
   .filter(Boolean);
 
-// Fallback para desenvolvimento local
 if (ALLOWED_ORIGINS.length === 0) {
   ALLOWED_ORIGINS.push('http://localhost:3000', 'http://localhost:3001');
-  logger.warn('CORS', 'ALLOWED_ORIGINS não definido no .env — usando fallback de desenvolvimento', ALLOWED_ORIGINS);
+  logger.warn('CORS', 'ALLOWED_ORIGINS não definido — usando fallback de desenvolvimento', ALLOWED_ORIGINS);
 } else {
   logger.success('CORS', 'Origens permitidas carregadas', ALLOWED_ORIGINS);
 }
 
 const corsOptions = {
   origin: (origin, callback) => {
-    // Permite requisições sem origin (Postman, curl, server-to-server)
+    // Permite requisições sem origin (Postman, curl, redirects OAuth)
     if (!origin) return callback(null, true);
 
     if (ALLOWED_ORIGINS.includes(origin)) {
@@ -123,8 +145,8 @@ const corsOptions = {
     logger.sec(`Origem bloqueada pelo CORS → ${origin}`, { origin });
     return callback(new Error(`CORS: origem não permitida — ${origin}`));
   },
-  credentials: true,
-  methods:     ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
+  credentials:    true,
+  methods:        ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
   allowedHeaders: ['Content-Type', 'Authorization', 'X-Request-ID'],
 };
 
@@ -139,17 +161,72 @@ app.use(express.urlencoded({ extended: true, limit: '1mb' }));
 logger.success('APP', 'Body parsers configurados (limit: 1mb)');
 
 // ============================================================
+// 🔐 EXPRESS-SESSION
+//
+// ⚠️  NECESSÁRIO para o Passport funcionar no redirect cycle
+//     do OAuth. NÃO usamos session para autenticação real —
+//     nossa auth é 100% JWT (stateless).
+//
+// A session existe apenas para o Passport armazenar o estado
+// temporário entre o redirect para o Google e o callback de volta.
+// Após o callback, o JWT é gerado e a session não é mais usada.
+//
+// Configurações de segurança:
+//   - secret: reutiliza JWT_SECRET (sem nova variável de env)
+//   - secure: true em produção (HTTPS only via Cloudflare)
+//   - httpOnly: true (não acessível via JS — proteção XSS)
+//   - sameSite: 'lax' (permite o redirect cross-site do Google)
+//   - maxAge: 5 minutos (suficiente para o callback, muito curto
+//     para ser explorado como vetor de ataque)
+// ============================================================
+app.use(session({
+  secret:            process.env.JWT_SECRET,
+  resave:            false,
+  saveUninitialized: false,
+  name:              'nexaspark.sid', // ⚠️  nome customizado evita fingerprinting
+  cookie: {
+    secure:   process.env.NODE_ENV === 'production',
+    httpOnly: true,
+    maxAge:   5 * 60 * 1000, // 5 minutos — só para o fluxo OAuth
+    sameSite: 'lax',
+  },
+}));
+
+logger.success('APP', 'express-session configurado', {
+  name:     'nexaspark.sid',
+  maxAge:   '5min',
+  secure:   process.env.NODE_ENV === 'production',
+  httpOnly: true,
+  sameSite: 'lax',
+  note:     'Session usada apenas durante redirect cycle OAuth',
+});
+
+// ============================================================
+// 🛂 PASSPORT — Middleware de autenticação OAuth
+//
+// ⚠️  ORDEM OBRIGATÓRIA:
+//   1. express-session (acima) — Passport precisa da session
+//   2. passport.initialize()   — inicializa o Passport
+//   3. passport.session()      — lê/escreve usuário na session
+//
+// Deve vir APÓS: cors, body parsers, session
+// Deve vir ANTES: rotas
+// ============================================================
+app.use(passport.initialize());
+app.use(passport.session());
+
+logger.success('APP', 'Passport inicializado', {
+  strategy:  'google-oauth20',
+  session:   false, // rotas usam session: false — JWT-based
+  serialize: 'user.id only',
+});
+
+// ============================================================
 // 📋 MIDDLEWARE DE REQUEST/RESPONSE LOGGING
 //
-// ⚠️  PROBLEMA ORIGINAL: o debug global logava req.headers inteiro,
-//     o que expõe o token JWT (Authorization header) nos logs.
-//     Em produção isso é uma falha grave de segurança.
-//
-// ✅  CORREÇÃO:
-//     - Headers sensíveis são mascarados antes do log
-//     - Body com senha é sanitizado
-//     - requestId único gerado e injetado em req para correlação
-//     - Tempo de resposta logado no evento 'finish'
+// ⚠️  Headers sensíveis mascarados antes do log.
+//     Body com senha sanitizado.
+//     requestId único para correlação entre todos os logs.
 // ============================================================
 function sanitizeHeaders(headers) {
   const clone = { ...headers };
@@ -171,47 +248,31 @@ app.use((req, res, next) => {
   const requestId = req.headers['x-request-id'] ||
     `${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
 
-  req.requestId  = requestId;
-  req.startTime  = Date.now();
+  req.requestId = requestId;
+  req.startTime = Date.now();
 
-  // Log da requisição entrada
   logger.subsep();
   logger.request(req.method, req.originalUrl, req.ip, requestId);
   logger.info('REQ', 'Headers', sanitizeHeaders(req.headers));
 
-  if (Object.keys(req.body || {}).length > 0) {
-    logger.info('REQ', 'Body', sanitizeBody(req.body));
-  }
-  if (Object.keys(req.query || {}).length > 0) {
-    logger.info('REQ', 'Query', req.query);
-  }
-  if (Object.keys(req.params || {}).length > 0) {
-    logger.info('REQ', 'Params', req.params);
-  }
+  if (Object.keys(req.body   || {}).length > 0) logger.info('REQ', 'Body',   sanitizeBody(req.body));
+  if (Object.keys(req.query  || {}).length > 0) logger.info('REQ', 'Query',  req.query);
+  if (Object.keys(req.params || {}).length > 0) logger.info('REQ', 'Params', req.params);
 
-  // Log da resposta ao finalizar
   res.on('finish', () => {
     const ms = Date.now() - req.startTime;
     logger.response(req.method, req.originalUrl, res.statusCode, ms, requestId);
     logger.perf(`${req.method} ${req.originalUrl}`, ms);
 
-    // Alerta para respostas lentas (> 2s)
     if (ms > 2000) {
       logger.warn('PERF', `Resposta lenta detectada!`, {
-        method: req.method,
-        url:    req.originalUrl,
-        ms,
-        requestId,
+        method: req.method, url: req.originalUrl, ms, requestId,
       });
     }
 
-    // Alerta para erros 5xx
     if (res.statusCode >= 500) {
       logger.error('APP', `Resposta 5xx detectada`, {
-        status:    res.statusCode,
-        url:       req.originalUrl,
-        requestId,
-        ip:        req.ip,
+        status: res.statusCode, url: req.originalUrl, requestId, ip: req.ip,
       });
     }
   });
@@ -225,8 +286,7 @@ app.use((req, res, next) => {
 app.use(
   '/certificates',
   express.static(path.join(__dirname, 'src/certificates'), {
-    // ⚠️  SEGURANÇA: desativa directory listing
-    index: false,
+    index: false, // ⚠️  SEGURANÇA: desativa directory listing
   })
 );
 logger.success('APP', 'Static files: /certificates → src/certificates');
@@ -234,46 +294,34 @@ logger.success('APP', 'Static files: /certificates → src/certificates');
 // ============================================================
 // 🚦 RATE LIMITING
 //
-// ⚠️  MELHORIA: rate limits diferenciados por tipo de rota.
-//     Auth (login/register) recebe limite muito mais restritivo
-//     que as rotas gerais. Evita ataques de credential stuffing.
+// Auth (login/register/OAuth) → 20 req/15min por IP
+// Global → 100 req/15min por IP
 // ============================================================
-
-// Limite geral — 100 req / 15min por IP
 const globalLimiter = rateLimit({
   windowMs:        15 * 60 * 1000,
   max:             100,
   standardHeaders: true,
   legacyHeaders:   false,
-  message: {
-    success: false,
-    error:   'Muitas requisições. Tente novamente em 15 minutos.',
-    code:    'RATE_LIMIT_EXCEEDED',
-  },
+  message: { success: false, error: 'Muitas requisições. Tente novamente em 15 minutos.', code: 'RATE_LIMIT_EXCEEDED' },
   handler: (req, res, next, options) => {
     logger.sec('Rate limit global atingido', { ip: req.ip, url: req.originalUrl });
     res.status(429).json(options.message);
   },
 });
 
-// Limite de autenticação — 20 req / 15min por IP (mais restritivo)
 const authLimiter = rateLimit({
   windowMs:        15 * 60 * 1000,
   max:             20,
   standardHeaders: true,
   legacyHeaders:   false,
-  message: {
-    success: false,
-    error:   'Muitas tentativas de autenticação. Tente novamente em 15 minutos.',
-    code:    'AUTH_RATE_LIMIT_EXCEEDED',
-  },
+  message: { success: false, error: 'Muitas tentativas de autenticação. Tente novamente em 15 minutos.', code: 'AUTH_RATE_LIMIT_EXCEEDED' },
   handler: (req, res, next, options) => {
     logger.sec('Rate limit de autenticação atingido', { ip: req.ip, url: req.originalUrl });
     res.status(429).json(options.message);
   },
 });
 
-app.use('/api', globalLimiter);
+app.use('/api',      globalLimiter);
 app.use('/api/auth', authLimiter);
 logger.success('APP', 'Rate limiting configurado', { global: '100/15min', auth: '20/15min' });
 
@@ -283,11 +331,11 @@ logger.success('APP', 'Rate limiting configurado', { global: '100/15min', auth: 
 app.get('/api/health', async (req, res) => {
   logger.info('HEALTH', 'Health check solicitado', { ip: req.ip });
 
-  let dbStatus = 'UP';
+  let dbStatus  = 'UP';
   let dbLatency = null;
 
   try {
-    const t0     = Date.now();
+    const t0  = Date.now();
     await db.query('SELECT 1');
     dbLatency = Date.now() - t0;
     logger.success('HEALTH', 'Banco respondeu', { latency: dbLatency + 'ms' });
@@ -305,8 +353,9 @@ app.get('/api/health', async (req, res) => {
     version:   process.env.npm_package_version || '1.0.0',
     uptime:    Math.floor(process.uptime()) + 's',
     database:  { status: dbStatus, latency: dbLatency ? dbLatency + 'ms' : null },
+    oauth:     { google: !!(process.env.GOOGLE_CLIENT_ID && process.env.GOOGLE_CLIENT_SECRET) },
     memory: {
-      heapUsed:  Math.round(process.memoryUsage().heapUsed / 1024 / 1024) + 'MB',
+      heapUsed:  Math.round(process.memoryUsage().heapUsed  / 1024 / 1024) + 'MB',
       heapTotal: Math.round(process.memoryUsage().heapTotal / 1024 / 1024) + 'MB',
     },
   });
@@ -322,9 +371,11 @@ app.get('/', (req, res) => {
     message:  'NexaSpark API — Certificação Digital Enterprise',
     version:  process.env.npm_package_version || '1.0.0',
     endpoints: {
-      health:       'GET  /api/health',
-      auth:         'POST /api/auth/login | /api/auth/register',
-      certificates: 'GET|POST /api/certificates',
+      health:           'GET  /api/health',
+      auth:             'POST /api/auth/login | /api/auth/register',
+      authGoogle:       'GET  /api/auth/google',
+      authGoogleCb:     'GET  /api/auth/google/callback',
+      certificates:     'GET|POST /api/certificates',
     },
   });
 });
@@ -338,7 +389,17 @@ logger.info('APP', 'Registrando rotas...');
 app.use('/api/auth',         authRoutes);
 app.use('/api/certificates', certificateRoutes);
 
-logger.success('APP', 'Rotas registradas');
+// ⚠️  CORREÇÃO: adminRoutes estava importado no topo mas
+//     nunca registrado com app.use(). Corrigido aqui.
+//     Rotas admin ficam sob /api/admin — proteja com middleware
+//     de role admin no adminRoutes.js.
+app.use('/api/admin',        adminRoutes);
+
+logger.success('APP', 'Rotas registradas', {
+  '/api/auth':         'authRoutes (local + OAuth Google)',
+  '/api/certificates': 'certificateRoutes',
+  '/api/admin':        'adminRoutes ← CORRIGIDO (estava sem registro)',
+});
 
 // ============================================================
 // 🔍 404 — Rota não encontrada
@@ -357,9 +418,9 @@ app.use((req, res) => {
 // ============================================================
 // 💥 GLOBAL ERROR HANDLER
 //
-// ⚠️  MELHORIA: o original expunha stack trace em produção.
-//     Agora stack só aparece em development.
-//     Adicionamos requestId e timestamp para correlação de logs.
+// ⚠️  Stack trace exposto apenas em development.
+//     requestId e timestamp para correlação de logs.
+//     Erros CORS tratados separadamente com mensagem clara.
 // ============================================================
 // eslint-disable-next-line no-unused-vars
 app.use((err, req, res, next) => {
@@ -376,21 +437,16 @@ app.use((err, req, res, next) => {
     logger.error('GLOBAL_ERROR', 'Stack trace:\n' + err.stack);
   }
 
-  // Erro de CORS — mensagem específica
   if (err.message?.startsWith('CORS:')) {
-    return res.status(403).json({
-      success: false,
-      error:   'Origem não permitida',
-      code:    'CORS_BLOCKED',
-    });
+    return res.status(403).json({ success: false, error: 'Origem não permitida', code: 'CORS_BLOCKED' });
   }
 
   res.status(status).json({
-    success:    false,
-    error:      process.env.NODE_ENV === 'development' ? err.message : 'Erro interno do servidor',
-    code:       err.code || 'INTERNAL_ERROR',
-    requestId:  req.requestId,
-    timestamp:  new Date().toISOString(),
+    success:   false,
+    error:     process.env.NODE_ENV === 'development' ? err.message : 'Erro interno do servidor',
+    code:      err.code || 'INTERNAL_ERROR',
+    requestId: req.requestId,
+    timestamp: new Date().toISOString(),
     ...(process.env.NODE_ENV === 'development' && { stack: err.stack }),
   });
 });
@@ -408,33 +464,29 @@ async function startServer() {
     logger.perf('DB connection test', Date.now() - t0);
     logger.success('DB', 'PostgreSQL conectado ✅');
   } catch (error) {
-    // ⚠️  DECISÃO: não abortamos o start se o DB falhar —
-    //     Railway pode reconectar. O health check vai expor o status.
+    // ⚠️  Não abortamos o start — Railway pode reconectar.
+    //     health check monitorará o DB continuamente.
     logger.error('DB', 'Falha na conexão inicial', { message: error.message });
     logger.warn('DB', 'Servidor iniciará mesmo assim — health check monitorará o DB');
   }
 
   const server = app.listen(PORT, '0.0.0.0', () => {
     logger.sep();
-    console.log(c.bold(c.green(`  ✅ Servidor ONLINE → http://localhost:${PORT}`)));
-    console.log(c.gray(`  Health: http://localhost:${PORT}/api/health`));
+    console.log(c.bold(c.green(`  ✅ NexaSpark API ONLINE → http://localhost:${PORT}`)));
+    console.log(c.gray(`  Health:        http://localhost:${PORT}/api/health`));
+    console.log(c.gray(`  OAuth Google:  http://localhost:${PORT}/api/auth/google`));
     console.log(c.gray(`  PID: ${process.pid} | ${new Date().toISOString()}`));
     logger.sep();
   });
 
-  // ── Graceful shutdown ────────────────────────────────────
-  // ⚠️  MELHORIA: timeout de 10s para o servidor fechar conexões
-  //     ativas antes de encerrar o processo. O original fechava
-  //     abruptamente podendo corromper writes em andamento.
+  // ── Graceful shutdown ──────────────────────────────────────
+  // Timeout de 10s para fechar conexões ativas antes de encerrar.
   function gracefulShutdown(signal) {
     logger.warn('APP', `${signal} recebido — iniciando graceful shutdown`);
-
     server.close(() => {
       logger.success('APP', 'Servidor HTTP fechado');
       process.exit(0);
     });
-
-    // Força encerramento após 10s se ainda houver conexões
     setTimeout(() => {
       logger.error('APP', 'Graceful shutdown timeout (10s) — forçando encerramento');
       process.exit(1);
@@ -444,12 +496,10 @@ async function startServer() {
   process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
   process.on('SIGINT',  () => gracefulShutdown('SIGINT'));
 
-  // ── Erros não tratados ───────────────────────────────────
-  // ⚠️  NOVO: captura erros assíncronos não tratados que
-  //     normalmente derrubam o processo silenciosamente
+  // ── Erros não tratados ─────────────────────────────────────
   process.on('unhandledRejection', (reason, promise) => {
     logger.error('PROCESS', 'unhandledRejection detectado!', {
-      reason: String(reason),
+      reason:  String(reason),
       promise: String(promise),
     });
   });
