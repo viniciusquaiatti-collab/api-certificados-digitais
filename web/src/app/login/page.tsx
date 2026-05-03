@@ -1,12 +1,29 @@
 "use client";
 
-import { useEffect, useState, useRef } from "react";
+// ============================================================
+// 🔐 NexaSpark — /login/page.tsx
+//
+// ⚠️  ARQUITETURA Next.js 16 — SUSPENSE OBRIGATÓRIO:
+//     useSearchParams() DEVE estar dentro de <Suspense boundary>.
+//     Build falha com "useSearchParams() should be wrapped in
+//     a suspense boundary" se usado diretamente no export default.
+//
+// ESTRUTURA DO ARQUIVO:
+//   LoginLoading    → fallback visual enquanto Suspense hidrata
+//   LoginInner      → toda a lógica + useSearchParams() (dentro do Suspense)
+//   LoginPage       → export default, apenas o wrapper <Suspense>
+//
+// FLUXO OAuth detectado aqui:
+//   Backend redireciona /login?error=google_auth_failed → capturamos
+//   via searchParams e exibimos mensagem amigável ao usuário.
+// ============================================================
+
+import { useEffect, useState, useRef, Suspense } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { motion, AnimatePresence } from "framer-motion";
 
 // ============================================================
 // 🏢 LOGGER — Enterprise Grade | NexaSpark Frontend
-//
 // Padrão idêntico ao backend — colored console com prefixos.
 // Cada evento é rastreável no DevTools do browser.
 // ============================================================
@@ -48,83 +65,92 @@ const logger = {
 const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8080";
 
 // ============================================================
-// 🔐 LOGIN PAGE
+// 🗺️  MAPA DE ERROS OAUTH — mensagens amigáveis por código
+// Erros enviados pelo backend como ?error=CODIGO
 // ============================================================
-export default function Login() {
-  const router        = useRouter();
-  const searchParams  = useSearchParams();
+const OAUTH_ERROR_MESSAGES: Record<string, string> = {
+  google_auth_failed:  "Autenticação com Google falhou. Tente novamente.",
+  oauth_failed:        "Erro no fluxo OAuth. Tente novamente.",
+  oauth_invalid_user:  "Perfil Google inválido. Tente com outra conta.",
+  oauth_server_error:  "Erro interno no servidor OAuth. Tente mais tarde.",
+  user_not_found:      "Usuário não encontrado após autenticação Google.",
+  token_error:         "Erro ao gerar sessão. Tente novamente.",
+  invalid_token:       "Token inválido recebido. Tente novamente.",
+  NO_USER:             "Perfil do Google não disponível. Tente com outra conta.",
+};
 
-  const [email,       setEmail]       = useState("");
-  const [password,    setPassword]    = useState("");
-  const [showPass,    setShowPass]    = useState(false);
-  const [loading,     setLoading]     = useState(false);
+// ============================================================
+// ⏳ LOADING FALLBACK — exibido durante hidratação do Suspense
+// ============================================================
+function LoginLoading() {
+  return (
+    <div className="min-h-screen bg-black flex items-center justify-center">
+      <div className="w-8 h-8 border-2 border-emerald-400 border-t-transparent rounded-full animate-spin" />
+    </div>
+  );
+}
+
+// ============================================================
+// 🔐 LOGIN INNER — toda a lógica real
+// ⚠️  Este componente DEVE ser filho de <Suspense> pois usa
+//     useSearchParams(). Nunca exporte este componente diretamente.
+// ============================================================
+function LoginInner() {
+  const router       = useRouter();
+  const searchParams = useSearchParams(); // ← DEVE estar dentro de <Suspense>
+
+  const [email,         setEmail]         = useState("");
+  const [password,      setPassword]      = useState("");
+  const [showPass,      setShowPass]      = useState(false);
+  const [loading,       setLoading]       = useState(false);
   const [loadingGoogle, setLoadingGoogle] = useState(false);
-  const [error,       setError]       = useState("");
-  const [focused,     setFocused]     = useState<"email" | "password" | null>(null);
-  const [attempts,    setAttempts]    = useState(0);
+  const [error,         setError]         = useState("");
+  const [focused,       setFocused]       = useState<"email" | "password" | null>(null);
+  const [attempts,      setAttempts]      = useState(0);
 
   const emailRef = useRef<HTMLInputElement>(null);
   const t0Ref    = useRef(0);
 
   // ============================================================
-  // 🔍 DETECTA ERROS OAUTH VINDOS DO BACKEND
-  //
-  // ⚠️  Quando o Google OAuth falha, o backend redireciona para:
-  //     /login?error=google_auth_failed
-  //     /login?error=oauth_failed&code=NO_USER
-  //     etc.
-  //
-  // Capturamos aqui e exibimos mensagem amigável.
+  // 🚀 INICIALIZAÇÃO — detecta erros OAuth + sessão existente
   // ============================================================
   useEffect(() => {
     logger.sep();
-    logger.mount("Login");
+    logger.mount("LoginInner");
     logger.info("INIT", "Página de login carregada", {
       apiUrl:    API_URL,
       timestamp: new Date().toISOString(),
     });
 
-    // ── Verifica erros OAuth na URL ──────────────────────────
+    // ── Detecta erros OAuth na URL (?error=google_auth_failed etc) ──
+    // Backend redireciona aqui quando OAuth falha
     const oauthError = searchParams.get("error");
     if (oauthError) {
       logger.oauth("Erro OAuth detectado na URL", { error: oauthError });
 
-      const errorMessages: Record<string, string> = {
-        google_auth_failed:   "Autenticação com Google falhou. Tente novamente.",
-        oauth_failed:         "Erro no fluxo OAuth. Tente novamente.",
-        oauth_invalid_user:   "Perfil Google inválido. Tente com outra conta.",
-        oauth_server_error:   "Erro interno no servidor OAuth. Tente mais tarde.",
-        user_not_found:       "Usuário não encontrado após autenticação Google.",
-        token_error:          "Erro ao gerar sessão. Tente novamente.",
-        invalid_token:        "Token inválido recebido. Tente novamente.",
-      };
-
-      const friendlyMsg = errorMessages[oauthError] || `Erro de autenticação: ${oauthError}`;
+      const friendlyMsg = OAUTH_ERROR_MESSAGES[oauthError] || `Erro de autenticação: ${oauthError}`;
       setError(friendlyMsg);
-      logger.error("OAUTH", `Erro mapeado: ${friendlyMsg}`, { oauthError });
+      logger.error("OAUTH", `Mensagem mapeada: ${friendlyMsg}`, { oauthError });
 
-      // ⚠️  Limpa o query param da URL sem reload da página
-      //     Evita que o erro reapareça ao recarregar
+      // ⚠️  Limpa o query param sem reload — evita erro reaparecer no F5
       window.history.replaceState({}, "", "/login");
       logger.info("OAUTH", "Query param ?error removido da URL via replaceState");
     }
 
-    // ── Verifica sessão existente ────────────────────────────
+    // ── Verifica sessão JWT existente ────────────────────────
     const token = localStorage.getItem("token");
     if (token) {
-      logger.auth("Token existente detectado — verificando validade antes de redirecionar");
+      logger.auth("Token existente detectado — verificando validade...");
 
-      // Decodifica payload sem verificar assinatura (só para log)
       try {
         const payload = JSON.parse(atob(token.split(".")[1]));
-        const expiresAt = new Date(payload.exp * 1000);
         const isExpired = Date.now() > payload.exp * 1000;
 
         logger.auth("Token decodificado", {
           userId:    payload.id,
           email:     payload.email,
           provider:  payload.auth_provider || "local",
-          expiresAt: expiresAt.toISOString(),
+          expiresAt: new Date(payload.exp * 1000).toISOString(),
           isExpired,
         });
 
@@ -144,7 +170,7 @@ export default function Login() {
       logger.auth("Nenhuma sessão ativa — exibindo formulário");
     }
 
-    // Foca o campo email após animação de entrada
+    // Foca email após animação de entrada
     const focusTimer = setTimeout(() => {
       emailRef.current?.focus();
       logger.info("UX", "Focus automático no campo email");
@@ -152,7 +178,7 @@ export default function Login() {
 
     return () => {
       clearTimeout(focusTimer);
-      logger.unmount("Login");
+      logger.unmount("LoginInner");
       logger.sep();
     };
   }, []);
@@ -202,7 +228,7 @@ export default function Login() {
         method:  "POST",
         headers: {
           "Content-Type": "application/json",
-          // ⚠️  X-Request-ID para correlacionar com os logs do backend
+          // ⚠️  X-Request-ID para correlacionar com logs do Railway
           "X-Request-ID": `login_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
         },
         body: JSON.stringify({
@@ -213,21 +239,17 @@ export default function Login() {
 
       const fetchMs = performance.now() - tFetch;
       logger.perf("AUTH:HTTP", "Resposta HTTP recebida", fetchMs);
-      logger.info("AUTH:HTTP", "Status da resposta", {
-        status:     res.status,
-        statusText: res.statusText,
-        ok:         res.ok,
-      });
+      logger.info("AUTH:HTTP", "Status da resposta", { status: res.status, ok: res.ok });
 
-      // ── Parse JSON ───────────────────────────────────────
+      // ── Parse JSON seguro ────────────────────────────────
       let data: any = {};
       try {
         data = await res.json();
         logger.info("AUTH:PARSE", "Body parseado", {
-          hasToken:   !!(data.token || data.data?.token),
-          hasError:   !!data.error,
-          hasErrors:  Array.isArray(data.errors),
-          keys:       Object.keys(data),
+          hasToken:  !!(data.token || data.data?.token),
+          hasError:  !!data.error,
+          hasErrors: Array.isArray(data.errors),
+          keys:      Object.keys(data),
         });
       } catch (parseErr) {
         logger.error("AUTH:PARSE", "JSON inválido na resposta", { parseErr: String(parseErr) });
@@ -252,11 +274,9 @@ export default function Login() {
           totalMs: totalMs.toFixed(2) + "ms",
         });
 
-        // ⚠️  Caso especial: conta OAuth sem senha
+        // ⚠️  Caso especial: conta criada via Google sem senha local
         if (data?.code === "OAUTH_ACCOUNT_NO_PASSWORD") {
-          logger.oauth("Conta OAuth detectada — orientando usuário", {
-            provider: data?.provider,
-          });
+          logger.oauth("Conta OAuth detectada — orientando usuário", { provider: data?.provider });
         }
 
         setError(msg);
@@ -266,7 +286,6 @@ export default function Login() {
 
       // ── Sucesso ──────────────────────────────────────────
       const token = data.token || data.data?.token;
-
       if (!token) {
         logger.error("AUTH", "Resposta OK mas sem token", { data });
         setError("Erro inesperado — tente novamente.");
@@ -288,11 +307,9 @@ export default function Login() {
         logger.warn("AUTH", "Token recebido mas não decodificável para log");
       }
 
-      logger.auth("Armazenando token...");
       localStorage.setItem("token", token);
       document.cookie = `token=${token}; path=/; SameSite=Lax`;
       logger.success("AUTH", "Token armazenado — localStorage + cookie ✅");
-
       logger.perf("LOGIN:FLOW", "Login completo (submit → armazenamento)", totalMs);
       logger.nav("/dashboard");
       logger.sep();
@@ -313,15 +330,15 @@ export default function Login() {
   // ============================================================
   // 🌐 GOOGLE OAUTH — Login via Google
   //
-  // ⚠️  FLUXO:
-  //   1. Browser redireciona para o backend Railway
-  //   2. Backend → Passport → Google accounts.google.com
-  //   3. Google → callback no backend
-  //   4. Backend gera JWT → redireciona para /auth/callback?token=xxx
-  //   5. /auth/callback salva token e redireciona para /dashboard
+  // ⚠️  FLUXO COMPLETO:
+  //   1. window.location.href → backend /api/auth/google
+  //   2. Passport → accounts.google.com
+  //   3. Google → backend /api/auth/google/callback
+  //   4. Backend gera JWT → redirect → /auth/callback?token=xxx
+  //   5. /auth/callback salva token → redireciona /dashboard
   //
-  // ⚠️  window.location.href e não router.push() pois é
-  //     redirect externo para o backend (domínio diferente).
+  // ⚠️  Usa window.location.href (não router.push) pois é
+  //     redirect cross-domain para o Railway.
   // ============================================================
   function handleGoogleLogin() {
     logger.sep();
@@ -336,12 +353,9 @@ export default function Login() {
     setLoadingGoogle(true);
     logger.event("AUTH:GOOGLE", "Usuário clicou em Continuar com Google");
 
-    // ⚠️  Pequeno delay para o estado de loading renderizar
-    //     antes do redirect acontecer
+    // ⚠️  Delay mínimo para o spinner renderizar antes do redirect
     setTimeout(() => {
-      logger.oauth("Redirecionando para backend OAuth...", {
-        url: `${API_URL}/api/auth/google`,
-      });
+      logger.oauth("Redirecionando para backend OAuth...", { url: `${API_URL}/api/auth/google` });
       window.location.href = `${API_URL}/api/auth/google`;
     }, 150);
   }
@@ -353,50 +367,22 @@ export default function Login() {
     <div className="min-h-screen bg-black flex items-center justify-center px-4 relative overflow-hidden">
 
       {/* BACKGROUND GLOW AMBIENT */}
-      <div
-        className="absolute inset-0 pointer-events-none"
-        style={{ background: "radial-gradient(ellipse 80% 60% at 50% 0%, rgba(16,185,129,0.07) 0%, transparent 70%)" }}
-      />
-      <div
-        className="absolute inset-0 pointer-events-none"
-        style={{ background: "radial-gradient(ellipse 60% 40% at 50% 100%, rgba(16,185,129,0.04) 0%, transparent 70%)" }}
-      />
+      <div className="absolute inset-0 pointer-events-none" style={{ background: "radial-gradient(ellipse 80% 60% at 50% 0%, rgba(16,185,129,0.07) 0%, transparent 70%)" }} />
+      <div className="absolute inset-0 pointer-events-none" style={{ background: "radial-gradient(ellipse 60% 40% at 50% 100%, rgba(16,185,129,0.04) 0%, transparent 70%)" }} />
 
       {/* GRID PATTERN */}
-      <div
-        className="absolute inset-0 pointer-events-none opacity-[0.025]"
-        style={{
-          backgroundImage: "linear-gradient(rgba(255,255,255,0.5) 1px, transparent 1px), linear-gradient(90deg, rgba(255,255,255,0.5) 1px, transparent 1px)",
-          backgroundSize: "48px 48px",
-        }}
-      />
+      <div className="absolute inset-0 pointer-events-none opacity-[0.025]" style={{ backgroundImage: "linear-gradient(rgba(255,255,255,0.5) 1px, transparent 1px), linear-gradient(90deg, rgba(255,255,255,0.5) 1px, transparent 1px)", backgroundSize: "48px 48px" }} />
 
       {/* LOGO */}
-      <motion.div
-        initial={{ opacity: 0, y: -12 }}
-        animate={{ opacity: 1, y: 0 }}
-        transition={{ duration: 0.5 }}
-        className="absolute top-6 left-1/2 -translate-x-1/2"
-      >
-        <button
-          onClick={() => { logger.nav("/"); router.push("/"); }}
-          className="text-white font-semibold text-sm tracking-tight hover:text-emerald-400 transition-colors"
-        >
+      <motion.div initial={{ opacity: 0, y: -12 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.5 }} className="absolute top-6 left-1/2 -translate-x-1/2">
+        <button onClick={() => { logger.nav("/"); router.push("/"); }} className="text-white font-semibold text-sm tracking-tight hover:text-emerald-400 transition-colors">
           NexaSpark
         </button>
       </motion.div>
 
       {/* CARD */}
-      <motion.div
-        initial={{ opacity: 0, y: 24, scale: 0.98 }}
-        animate={{ opacity: 1, y: 0, scale: 1 }}
-        transition={{ duration: 0.6, delay: 0.1, ease: [0.22, 1, 0.36, 1] }}
-        className="w-full max-w-sm relative z-10"
-      >
-        <div
-          className="rounded-2xl border border-white/[0.08] p-8 relative z-10"
-          style={{ background: "rgba(255,255,255,0.03)", backdropFilter: "blur(20px)" }}
-        >
+      <motion.div initial={{ opacity: 0, y: 24, scale: 0.98 }} animate={{ opacity: 1, y: 0, scale: 1 }} transition={{ duration: 0.6, delay: 0.1, ease: [0.22, 1, 0.36, 1] }} className="w-full max-w-sm relative z-10">
+        <div className="rounded-2xl border border-white/[0.08] p-8 relative z-10" style={{ background: "rgba(255,255,255,0.03)", backdropFilter: "blur(20px)" }}>
 
           {/* HEADER */}
           <div className="mb-8">
@@ -414,77 +400,36 @@ export default function Login() {
 
             {/* EMAIL */}
             <div className="relative">
-              <label
-                htmlFor="email"
-                className={`absolute left-3 transition-all duration-200 pointer-events-none text-xs font-medium ${
-                  focused === "email" || email
-                    ? "-top-2 text-emerald-400 bg-black px-1"
-                    : "top-3.5 text-gray-500"
-                }`}
-              >
-                E-mail
-              </label>
+              <label htmlFor="email" className={`absolute left-3 transition-all duration-200 pointer-events-none text-xs font-medium ${focused === "email" || email ? "-top-2 text-emerald-400 bg-black px-1" : "top-3.5 text-gray-500"}`}>E-mail</label>
               <input
                 ref={emailRef}
-                id="email"
-                type="email"
-                value={email}
+                id="email" type="email" value={email}
                 onChange={(e) => { setEmail(e.target.value); setError(""); }}
                 onFocus={() => { setFocused("email"); logger.event("UX", "Campo email focado"); }}
                 onBlur={() => setFocused(null)}
                 autoComplete="email"
                 disabled={loading || loadingGoogle}
-                className={`w-full bg-white/[0.04] border rounded-lg px-3 pt-5 pb-2.5 text-sm text-white outline-none transition-all duration-200 disabled:opacity-50 disabled:cursor-not-allowed ${
-                  focused === "email"
-                    ? "border-emerald-500/60"
-                    : "border-white/[0.08] hover:border-white/[0.15]"
-                }`}
+                className={`w-full bg-white/[0.04] border rounded-lg px-3 pt-5 pb-2.5 text-sm text-white outline-none transition-all duration-200 disabled:opacity-50 disabled:cursor-not-allowed ${focused === "email" ? "border-emerald-500/60" : "border-white/[0.08] hover:border-white/[0.15]"}`}
               />
             </div>
 
             {/* SENHA */}
             <div className="relative">
-              <label
-                htmlFor="password"
-                className={`absolute left-3 transition-all duration-200 pointer-events-none text-xs font-medium ${
-                  focused === "password" || password
-                    ? "-top-2 text-emerald-400 bg-black px-1"
-                    : "top-3.5 text-gray-500"
-                }`}
-              >
-                Senha
-              </label>
+              <label htmlFor="password" className={`absolute left-3 transition-all duration-200 pointer-events-none text-xs font-medium ${focused === "password" || password ? "-top-2 text-emerald-400 bg-black px-1" : "top-3.5 text-gray-500"}`}>Senha</label>
               <input
-                id="password"
-                type={showPass ? "text" : "password"}
-                value={password}
+                id="password" type={showPass ? "text" : "password"} value={password}
                 onChange={(e) => { setPassword(e.target.value); setError(""); }}
                 onFocus={() => { setFocused("password"); logger.event("UX", "Campo senha focado"); }}
                 onBlur={() => setFocused(null)}
                 autoComplete="current-password"
                 disabled={loading || loadingGoogle}
-                className={`w-full bg-white/[0.04] border rounded-lg px-3 pt-5 pb-2.5 pr-10 text-sm text-white outline-none transition-all duration-200 disabled:opacity-50 disabled:cursor-not-allowed ${
-                  focused === "password"
-                    ? "border-emerald-500/60"
-                    : "border-white/[0.08] hover:border-white/[0.15]"
-                }`}
+                className={`w-full bg-white/[0.04] border rounded-lg px-3 pt-5 pb-2.5 pr-10 text-sm text-white outline-none transition-all duration-200 disabled:opacity-50 disabled:cursor-not-allowed ${focused === "password" ? "border-emerald-500/60" : "border-white/[0.08] hover:border-white/[0.15]"}`}
               />
-              <button
-                type="button"
-                onClick={() => { setShowPass((v) => !v); logger.event("UX", `Senha ${showPass ? "ocultada" : "exibida"}`); }}
-                className="absolute right-3 top-3.5 text-gray-500 hover:text-gray-300 transition-colors"
-                tabIndex={-1}
-              >
+              <button type="button" onClick={() => { setShowPass((v) => !v); logger.event("UX", `Senha ${showPass ? "ocultada" : "exibida"}`); }} className="absolute right-3 top-3.5 text-gray-500 hover:text-gray-300 transition-colors" tabIndex={-1}>
                 {showPass ? (
-                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
-                    <path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24"/>
-                    <line x1="1" y1="1" x2="23" y2="23"/>
-                  </svg>
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24"/><line x1="1" y1="1" x2="23" y2="23"/></svg>
                 ) : (
-                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
-                    <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/>
-                    <circle cx="12" cy="12" r="3"/>
-                  </svg>
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>
                 )}
               </button>
             </div>
@@ -492,36 +437,16 @@ export default function Login() {
             {/* ERRO */}
             <AnimatePresence>
               {error && (
-                <motion.div
-                  initial={{ opacity: 0, y: -6, height: 0 }}
-                  animate={{ opacity: 1, y: 0, height: "auto" }}
-                  exit={{ opacity: 0, y: -6, height: 0 }}
-                  transition={{ duration: 0.2 }}
-                  className="flex items-start gap-2 p-3 rounded-lg bg-red-950/40 border border-red-900/40"
-                >
-                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#f87171" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="mt-0.5 shrink-0">
-                    <circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/>
-                  </svg>
+                <motion.div initial={{ opacity: 0, y: -6, height: 0 }} animate={{ opacity: 1, y: 0, height: "auto" }} exit={{ opacity: 0, y: -6, height: 0 }} transition={{ duration: 0.2 }} className="flex items-start gap-2 p-3 rounded-lg bg-red-950/40 border border-red-900/40">
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#f87171" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="mt-0.5 shrink-0"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
                   <p className="text-red-400 text-xs leading-relaxed">{error}</p>
                 </motion.div>
               )}
             </AnimatePresence>
 
             {/* BOTÃO ENTRAR */}
-            <button
-              type="submit"
-              disabled={loading || loadingGoogle}
-              onClick={() => !loading && logger.event("AUTH", "Botão Entrar clicado")}
-              className="w-full bg-emerald-500 hover:bg-emerald-400 disabled:bg-emerald-900 disabled:cursor-not-allowed text-black font-semibold py-3 rounded-lg transition-all duration-200 hover:scale-[1.01] active:scale-[0.99] text-sm flex items-center justify-center gap-2"
-            >
-              {loading ? (
-                <>
-                  <svg className="animate-spin" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
-                    <path d="M21 12a9 9 0 1 1-6.219-8.56"/>
-                  </svg>
-                  Verificando...
-                </>
-              ) : "Entrar"}
+            <button type="submit" disabled={loading || loadingGoogle} onClick={() => !loading && logger.event("AUTH", "Botão Entrar clicado")} className="w-full bg-emerald-500 hover:bg-emerald-400 disabled:bg-emerald-900 disabled:cursor-not-allowed text-black font-semibold py-3 rounded-lg transition-all duration-200 hover:scale-[1.01] active:scale-[0.99] text-sm flex items-center justify-center gap-2">
+              {loading ? (<><svg className="animate-spin" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><path d="M21 12a9 9 0 1 1-6.219-8.56"/></svg>Verificando...</>) : "Entrar"}
             </button>
 
           </form>
@@ -534,31 +459,11 @@ export default function Login() {
           </div>
 
           {/* GOOGLE LOGIN */}
-          <button
-            type="button"
-            onClick={handleGoogleLogin}
-            disabled={loading || loadingGoogle}
-            className="w-full flex items-center justify-center gap-3 border border-white/[0.08] hover:border-white/[0.18] bg-white/[0.03] hover:bg-white/[0.06] disabled:opacity-50 disabled:cursor-not-allowed text-white text-sm py-3 rounded-lg transition-all duration-200 group relative z-10 cursor-pointer"
-          >
+          <button type="button" onClick={handleGoogleLogin} disabled={loading || loadingGoogle} className="w-full flex items-center justify-center gap-3 border border-white/[0.08] hover:border-white/[0.18] bg-white/[0.03] hover:bg-white/[0.06] disabled:opacity-50 disabled:cursor-not-allowed text-white text-sm py-3 rounded-lg transition-all duration-200 group relative z-10 cursor-pointer">
             {loadingGoogle ? (
-              <>
-                <svg className="animate-spin" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#9ca3af" strokeWidth="2.5">
-                  <path d="M21 12a9 9 0 1 1-6.219-8.56"/>
-                </svg>
-                <span className="text-gray-400">Redirecionando para Google...</span>
-              </>
+              <><svg className="animate-spin" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#9ca3af" strokeWidth="2.5"><path d="M21 12a9 9 0 1 1-6.219-8.56"/></svg><span className="text-gray-400">Redirecionando para Google...</span></>
             ) : (
-              <>
-                <svg width="16" height="16" viewBox="0 0 24 24">
-                  <path d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z" fill="#4285F4"/>
-                  <path d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z" fill="#34A853"/>
-                  <path d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.07H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.93l2.85-2.22.81-.62z" fill="#FBBC05"/>
-                  <path d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z" fill="#EA4335"/>
-                </svg>
-                <span className="text-gray-300 group-hover:text-white transition-colors">
-                  Continuar com Google
-                </span>
-              </>
+              <><svg width="16" height="16" viewBox="0 0 24 24"><path d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z" fill="#4285F4"/><path d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z" fill="#34A853"/><path d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.07H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.93l2.85-2.22.81-.62z" fill="#FBBC05"/><path d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z" fill="#EA4335"/></svg><span className="text-gray-300 group-hover:text-white transition-colors">Continuar com Google</span></>
             )}
           </button>
 
@@ -568,20 +473,32 @@ export default function Login() {
         <div className="mt-6 text-center space-y-2">
           <p className="text-gray-600 text-xs">
             Problemas com acesso?{" "}
-            <a
-              href="https://wa.me/5519982714815?text=Preciso%20de%20ajuda%20para%20acessar%20a%20NexaSpark"
-              target="_blank"
-              rel="noopener noreferrer"
-              onClick={() => logger.event("AUTH", "Suporte via WhatsApp clicado")}
-              className="text-emerald-500 hover:text-emerald-400 transition-colors"
-            >
+            <a href="https://wa.me/5519982714815?text=Preciso%20de%20ajuda%20para%20acessar%20a%20NexaSpark" target="_blank" rel="noopener noreferrer" onClick={() => logger.event("AUTH", "Suporte via WhatsApp clicado")} className="text-emerald-500 hover:text-emerald-400 transition-colors">
               Falar com suporte
             </a>
           </p>
           <p className="text-gray-700 text-xs">© {new Date().getFullYear()} NexaSpark</p>
         </div>
-
       </motion.div>
     </div>
+  );
+}
+
+// ============================================================
+// 🔐 EXPORT DEFAULT — LoginPage
+//
+// ⚠️  ÚNICO PROPÓSITO: envolver LoginInner em <Suspense>.
+//     Nunca adicione lógica aqui — tudo vai em LoginInner.
+//
+// Por que Suspense aqui e não em layout.tsx?
+//   O Suspense deve estar o mais próximo possível do componente
+//   que usa useSearchParams() para minimizar a área de fallback.
+//   Um Suspense no layout envolveria toda a árvore desnecessariamente.
+// ============================================================
+export default function LoginPage() {
+  return (
+    <Suspense fallback={<LoginLoading />}>
+      <LoginInner />
+    </Suspense>
   );
 }
