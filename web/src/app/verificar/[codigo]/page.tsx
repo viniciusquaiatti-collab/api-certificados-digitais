@@ -261,12 +261,29 @@ export default function VerificarPage() {
       userAgent: navigator.userAgent.substring(0, 80),
     });
 
+    // ============================================================
+    // ⚠️  CORREÇÃO CORS — headers customizados removidos
+    //
+    // PROBLEMA ORIGINAL: X-Client, X-Page e X-Timestamp são
+    // headers não-simples (non-simple headers) que disparam um
+    // preflight OPTIONS request antes do GET real.
+    // O backend não os lista em Access-Control-Allow-Headers,
+    // portanto o browser bloqueava o request com:
+    // "Request header field x-page is not allowed by
+    //  Access-Control-Allow-Headers in preflight response"
+    //
+    // SOLUÇÃO: usar apenas "Accept: application/json" que é um
+    // CORS-safelisted header — não dispara preflight OPTIONS,
+    // o request passa direto sem bloqueio.
+    //
+    // ALTERNATIVA FUTURA: adicionar os headers no backend em
+    // Access-Control-Allow-Headers se precisar rastrear origem.
+    //
+    // Ref: https://developer.mozilla.org/en-US/docs/Glossary/CORS-safelisted_request_header
+    // ============================================================
     fetch(`${API_URL}/api/certificates/verify/${codigo}`, {
       headers: {
-        "Accept":       "application/json",
-        "X-Client":     "nexaspark-web",
-        "X-Page":       "verificar",
-        "X-Timestamp":  new Date().toISOString(),
+        "Accept": "application/json",
       },
     })
       .then(async (res) => {
