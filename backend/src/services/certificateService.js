@@ -205,77 +205,68 @@ function getVerificationUrl(codigo) {
 }
 
 // ============================================================
-// ☁️  HELPER — Constrói URL Cloudinary com content-type correto
+// ☁️  HELPER — Valida e retorna URL final do PDF
 //
-// ⚠️  PROBLEMA CRÍTICO CORRIGIDO — Mobile/iOS não abria o PDF:
+// ⚠️  CORREÇÃO v2 — HTTP 400 com fl_inline em arquivos raw:
 //
-// CAUSA RAIZ: O Cloudinary subia o arquivo com resource_type 'raw'
-// mas SEM especificar o content-type na URL de entrega.
-// A URL gerada era:
-//   .../raw/upload/v.../certificados/cert_XXXX
+// TENTATIVA ANTERIOR (errada):
+//   Inseríamos fl_inline na URL: .../raw/upload/fl_inline/v.../cert.pdf
+//   Resultado: HTTP 400 — Cloudinary NÃO suporta transformation
+//   flags (fl_inline, fl_attachment) em URLs de arquivos raw.
+//   Transformações só funcionam para resource_type 'image' e 'video'.
 //
-// O browser/mobile recebia o arquivo sem Content-Type: application/pdf
-// no header HTTP, portanto:
-//   - Desktop Chrome: baixava como arquivo sem extensão
-//   - iOS Safari: mostrava "não é possível abrir"
-//   - Android: pedia para escolher aplicativo
+// CAUSA REAL DO PROBLEMA MOBILE:
+//   O arquivo era upado sem 'format' definido → Cloudinary salvava
+//   sem extensão → URL sem .pdf → CDN servia como octet-stream.
 //
-// SOLUÇÃO: adicionar flags de transformação na URL do Cloudinary:
-//   fl_attachment         → força download com nome correto
-//   fl_attachment:cert_XX → define o nome do arquivo no download
+// SOLUÇÃO CORRETA:
+//   Ao fazer upload com format:'pdf', o Cloudinary já adiciona .pdf
+//   na URL automaticamente:
+//   .../raw/upload/v.../certificados/cert_XXX.pdf
 //
-// Para VISUALIZAÇÃO inline (não download), usar:
-//   fl_inline             → serve inline com Content-Type correto
+//   Essa URL serve o arquivo com Content-Type: application/pdf
+//   diretamente — sem precisar de flags na URL.
 //
-// A URL correta fica:
-//   .../raw/upload/fl_inline/v.../certificados/cert_XXXX.pdf
+//   iOS Safari, Android Chrome e todos os browsers reconhecem
+//   .pdf na URL e abrem com o visualizador nativo.
 //
-// IMPORTANTE: o '.pdf' no final da URL instrui o CDN Cloudinary
-// a servir com Content-Type: application/pdf — sem ele, raw
-// serve como application/octet-stream que mobile não abre.
-//
-// Ref: https://cloudinary.com/documentation/transformation_reference#fl_attachment
+// ✅  CONCLUSÃO: retornamos a secure_url direto — o format:'pdf'
+//     no upload já resolve o problema mobile.
 // ============================================================
-function buildCloudinaryPdfUrl(secureUrl, nomeParticipante, codigoVerificacao) {
+function buildCloudinaryPdfUrl(secureUrl, codigoVerificacao) {
   if (!secureUrl) {
-    logger.error('CLOUDINARY:URL', 'secure_url vazia — não foi possível construir URL final');
+    logger.error('CLOUDINARY:URL', '🚨 secure_url vazia — URL inválida', { codigoVerificacao });
     return secureUrl;
   }
 
-  logger.cloud('Construindo URL final do PDF...', { secureUrl });
+  logger.cloud('Validando URL final do PDF...', { secureUrl });
 
-  // ── Estratégia: fl_inline + .pdf no final ────────────────
-  // fl_inline  → serve com Content-Type: application/pdf (visualização no browser)
-  // .pdf       → hint para o CDN do content-type correto
-  //
-  // Alternativa para forçar download com nome legível:
-  //   fl_attachment:NexaSpark_Certificado_CODIGO
-  //
-  // ⚠️  Escolhemos fl_inline para que mobile abra direto no
-  //     visualizador de PDF nativo (iOS Files, Android Drive)
-  //     em vez de forçar download que pode falhar em alguns browsers.
-
+  // ⚠️  Garante que a URL tem .pdf no final
+  // O Cloudinary já adiciona quando format:'pdf' é usado no upload,
+  // mas fazemos verificação defensiva para garantir.
   let url = secureUrl;
 
-  // Insere fl_inline na URL após /upload/
-  // Antes: .../raw/upload/v1777.../certificados/cert_XXX
-  // Depois: .../raw/upload/fl_inline/v1777.../certificados/cert_XXX.pdf
-  if (url.includes('/upload/') && !url.includes('fl_inline')) {
-    url = url.replace('/upload/', '/upload/fl_inline/');
-    logger.cloud('fl_inline inserido na URL ✅');
-  }
-
-  // Adiciona .pdf no final se não tiver
   if (!url.endsWith('.pdf')) {
     url = url + '.pdf';
-    logger.cloud('.pdf adicionado ao final da URL ✅');
+    logger.warn('CLOUDINARY:URL', 'URL sem .pdf — adicionado defensivamente', {
+      original: secureUrl,
+      corrigida: url,
+      hint:     'Verifique se format:"pdf" está no upload options',
+    });
   }
 
-  logger.success('CLOUDINARY:URL', 'URL final do PDF construída', {
-    original: secureUrl,
-    final:    url,
-    flags:    'fl_inline + .pdf extension',
-    impact:   'Mobile/iOS/Android abrirá como PDF nativo ✅',
+  // ⚠️  Garante que NÃO há flags de transformação (fl_inline, fl_attachment)
+  // pois causam HTTP 400 para resource_type:'raw'
+  if (url.includes('/fl_') || url.includes('/fl_inline') || url.includes('/fl_attachment')) {
+    logger.error('CLOUDINARY:URL', '🚨 URL contém transformation flags inválidas para raw — removendo', { url });
+    url = url.replace(/\/fl_[^/]+/g, '');
+  }
+
+  logger.success('CLOUDINARY:URL', 'URL final do PDF validada ✅', {
+    url,
+    terminaComPdf: url.endsWith('.pdf'),
+    semFlags:      !url.includes('/fl_'),
+    impact:        'iOS/Android abrirão o PDF nativo via Content-Type: application/pdf ✅',
   });
 
   return url;
@@ -572,7 +563,6 @@ async function generatePDF(data) {
   //
   const urlFinal = buildCloudinaryPdfUrl(
     uploadResult.secure_url,
-    data.nome_participante,
     data.codigo_verificacao
   );
 
@@ -592,8 +582,9 @@ async function generatePDF(data) {
 
   logger.sep();
 
-  // ⚠️  Retorna urlFinal (com fl_inline + .pdf) em vez da
-  //     secure_url bruta — correção do bug mobile
+  // ⚠️  Retorna urlFinal — secure_url com .pdf garantido
+  //     O format:'pdf' no upload já resolve o problema mobile.
+  //     buildCloudinaryPdfUrl() apenas valida e garante a extensão.
   return urlFinal;
 }
 
