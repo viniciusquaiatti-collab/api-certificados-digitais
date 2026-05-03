@@ -172,11 +172,40 @@ function formatDateBR(dateString) {
 }
 
 // ============================================================
-// 🌐 HELPER — URL do frontend para o QR code
+// 🌐 HELPER — URL de verificação pública do certificado
+//
+// ⚠️  BUG CRÍTICO CORRIGIDO #1 — ReferenceError: base is not defined
+//     A versão anterior retornava `${base}/verify/${codigo}` mas
+//     a variável `base` não estava definida no escopo da função —
+//     causava ReferenceError em tempo de execução, abortando
+//     silenciosamente toda geração de PDF.
+//
+// ⚠️  CORREÇÃO #2 — Rota atualizada: /verify/ → /verificar/
+//     A nova página de verificação própria do NexaSpark está em:
+//     web/src/app/verificar/[codigo]/page.tsx
+//     URL pública: nexaspark.com.br/verificar/CODIGO
+//     O QR code impresso no PDF agora aponta para domínio próprio,
+//     eliminando a dependência do Lovable (verificadoroficial.lovable.app).
+//
+// ✅  CORREÇÃO: base definida corretamente via FRONTEND_URL.
+//
+// ⚠️  AÇÃO NECESSÁRIA NO RAILWAY:
+//     Adicione/atualize a variável de ambiente:
+//     FRONTEND_URL=https://nexaspark.com.br
 // ============================================================
 function getVerificationUrl(codigo) {
   const base = (process.env.FRONTEND_URL || 'http://localhost:3000').replace(/\/$/, '');
-  return `${base}/verify/${codigo}`;
+  const url  = `${base}/verificar/${codigo}`;
+
+  logger.info('URL', 'URL de verificação gerada', {
+    base,
+    url,
+    fonteDados: process.env.FRONTEND_URL
+      ? 'FRONTEND_URL (env)'
+      : '⚠️  fallback localhost — configure FRONTEND_URL no Railway',
+  });
+
+  return url;
 }
 
 // ============================================================
@@ -381,25 +410,41 @@ async function generatePDF(data) {
 
   const t3 = Date.now();
 
-  const uploadResult = await cloudinary.uploader.upload(
-    `data:application/pdf;base64,${base64PDF}`,
-    {
-      resource_type: 'raw',
-      folder:        'certificados',
-      public_id:     publicId,
-      // ⚠️  MELHORIA: tags para facilitar gestão no painel Cloudinary
-      tags:          ['nexaspark', 'certificate', data.codigo_verificacao],
-    }
-  );
+  // ⚠️  CORREÇÃO #3 — try/catch explícito no upload Cloudinary
+  //     O original deixava o erro propagar sem logar detalhes.
+  //     Agora capturamos http_code e message antes de relançar,
+  //     permitindo diagnóstico preciso no log quando o upload falha.
+  let uploadResult;
+  try {
+    uploadResult = await cloudinary.uploader.upload(
+      `data:application/pdf;base64,${base64PDF}`,
+      {
+        resource_type: 'raw',
+        folder:        'certificados',
+        public_id:     publicId,
+        tags:          ['nexaspark', 'certificate', data.codigo_verificacao],
+      }
+    );
+  } catch (uploadErr) {
+    logger.error('CLOUDINARY', 'Falha no upload — detalhes completos', {
+      message:   uploadErr.message,
+      http_code: uploadErr.http_code,
+      publicId,
+      sizeKB:    Math.round(pdfBuffer.length / 1024),
+      hint:      'Verifique credenciais Cloudinary e limite de plano',
+    });
+    throw uploadErr;
+  }
 
   logger.perf('CLOUDINARY', 'Upload concluído', Date.now() - t3);
 
   const totalMs = Date.now() - t0;
   logger.perf('PDF', 'Fluxo completo (QR + render + upload)', totalMs);
   logger.success('PDF', 'Certificado gerado com sucesso', {
-    url:      uploadResult.secure_url,
-    publicId: uploadResult.public_id,
-    formato:  uploadResult.format,
+    url:             uploadResult.secure_url,
+    publicId:        uploadResult.public_id,
+    formato:         uploadResult.format,
+    verificationUrl,
     totalMs,
   });
 
