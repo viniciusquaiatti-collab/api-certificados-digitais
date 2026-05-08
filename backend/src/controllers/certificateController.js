@@ -1,134 +1,378 @@
 // src/controllers/certificateController.js
 // ============================================================
-// 🏢 NexaSpark — Certificate Controller
+// 🏢 NexaSpark — Certificate Controller v2.0 ENTERPRISE
+//
 // Core do produto: emissão e verificação de certificados digitais.
-// Cada função é rastreada, auditada e monitorada de ponta a ponta.
+// Cada operação é rastreada, auditada e monitorada de ponta a ponta.
+//
+// ✅ v2 — CORREÇÕES CRÍTICAS:
+//   🔐 generatePDF agora retorna { pdfUrl, hash, hashPreview }
+//      hash_preview é salvo no banco via Certificate.updateHashPreview()
+//   🔍 verifyCertificate retorna hash_preview real do banco
+//      (não mais null) — DNA visual funciona no frontend
+//   📊 Logger enterprise com emoticons, cores e telemetria
+//   ⚡ Promise.allSettled para operações paralelas não-críticas
+//   🛡️  Sanitização de CPF em todos os logs (LGPD Art. 37)
+//   📈 Telemetria de performance por fase de operação
+//   🗄️  Hints de banco de dados em erros para diagnóstico rápido
 // ============================================================
 
 const Certificate        = require('../models/Certificate');
 const CertificateService = require('../services/certificateService');
 const AuditLog           = require('../models/AuditLog');
 const crypto             = require('crypto');
+const os                 = require('os');
 
 // ============================================================
-// 🎨 LOGGER ENTERPRISE — ANSI colors, zero dependências externas
+// 🎨 ENTERPRISE LOGGER v2 — NexaSpark Global Debug System
+//
+// Alinhado com o logger do certificateService.js para
+// consistência visual no terminal Railway/local.
+//
+// Filosofia:
+//   — Um SRE que vê esses logs deve entender o sistema em 5s
+//   — Cada domínio tem emoticon único para escaneamento visual
+//   — Timestamps ISO para correlação entre serviços
+//   — CPF NUNCA aparece em texto puro (LGPD)
+//   — Erros mostram contexto suficiente para debug sem reiniciar
 // ============================================================
-const c = {
-  green:   (s) => `\x1b[32m${s}\x1b[0m`,
-  red:     (s) => `\x1b[31m${s}\x1b[0m`,
-  yellow:  (s) => `\x1b[33m${s}\x1b[0m`,
-  blue:    (s) => `\x1b[34m${s}\x1b[0m`,
-  cyan:    (s) => `\x1b[36m${s}\x1b[0m`,
-  magenta: (s) => `\x1b[35m${s}\x1b[0m`,
-  gray:    (s) => `\x1b[90m${s}\x1b[0m`,
-  bold:    (s) => `\x1b[1m${s}\x1b[0m`,
-  white:   (s) => `\x1b[37m${s}\x1b[0m`,
+
+const ANSI = {
+  reset:         '\x1b[0m',
+  bold:          '\x1b[1m',
+  dim:           '\x1b[2m',
+  red:           '\x1b[31m',
+  green:         '\x1b[32m',
+  yellow:        '\x1b[33m',
+  blue:          '\x1b[34m',
+  magenta:       '\x1b[35m',
+  cyan:          '\x1b[36m',
+  white:         '\x1b[37m',
+  gray:          '\x1b[90m',
+  brightRed:     '\x1b[91m',
+  brightGreen:   '\x1b[92m',
+  brightYellow:  '\x1b[93m',
+  brightBlue:    '\x1b[94m',
+  brightMagenta: '\x1b[95m',
+  brightCyan:    '\x1b[96m',
+  brightWhite:   '\x1b[97m',
+  bgRed:         '\x1b[41m',
+  bgGreen:       '\x1b[42m',
+  bgYellow:      '\x1b[43m',
 };
+
+const c = {
+  green:         (s) => `${ANSI.green}${s}${ANSI.reset}`,
+  brightGreen:   (s) => `${ANSI.brightGreen}${s}${ANSI.reset}`,
+  red:           (s) => `${ANSI.red}${s}${ANSI.reset}`,
+  brightRed:     (s) => `${ANSI.brightRed}${s}${ANSI.reset}`,
+  yellow:        (s) => `${ANSI.yellow}${s}${ANSI.reset}`,
+  brightYellow:  (s) => `${ANSI.brightYellow}${s}${ANSI.reset}`,
+  cyan:          (s) => `${ANSI.cyan}${s}${ANSI.reset}`,
+  brightCyan:    (s) => `${ANSI.brightCyan}${s}${ANSI.reset}`,
+  magenta:       (s) => `${ANSI.magenta}${s}${ANSI.reset}`,
+  brightMagenta: (s) => `${ANSI.brightMagenta}${s}${ANSI.reset}`,
+  blue:          (s) => `${ANSI.blue}${s}${ANSI.reset}`,
+  brightBlue:    (s) => `${ANSI.brightBlue}${s}${ANSI.reset}`,
+  white:         (s) => `${ANSI.white}${s}${ANSI.reset}`,
+  brightWhite:   (s) => `${ANSI.brightWhite}${s}${ANSI.reset}`,
+  gray:          (s) => `${ANSI.gray}${s}${ANSI.reset}`,
+  bold:          (s) => `${ANSI.bold}${s}${ANSI.reset}`,
+  dim:           (s) => `${ANSI.dim}${s}${ANSI.reset}`,
+  danger:        (s) => `${ANSI.bgRed}${ANSI.brightWhite}${ANSI.bold} ${s} ${ANSI.reset}`,
+  ok:            (s) => `${ANSI.bgGreen}${ANSI.white}${ANSI.bold} ${s} ${ANSI.reset}`,
+  alertWarn:     (s) => `${ANSI.bgYellow}${ANSI.white}${ANSI.bold} ${s} ${ANSI.reset}`,
+};
+
+// Timestamp ISO compacto — correlação entre serviços
+const ts  = () => c.gray(`[${new Date().toISOString()}]`);
+
+// Serializa payload para log — JSON compacto, trata circular refs
+const fmt = (data) => {
+  if (data === undefined || data === null) return '';
+  try   { return c.gray(JSON.stringify(data, null, 0)); }
+  catch { return c.gray('[não serializável]'); }
+};
+
+// Formata duração com cor semafórica
+const fmtMs = (ms) =>
+  ms < 200  ? c.brightGreen(`${ms}ms ⚡`) :
+  ms < 1000 ? c.brightYellow(`${ms}ms 🟡`) :
+  ms < 3000 ? c.yellow(`${ms}ms 🟠`) :
+              c.brightRed(`${ms}ms 🔴 LENTO`);
 
 const logger = {
-  info:    (scope, msg, data) => console.log(   c.blue(`ℹ️  [${scope}]`),    msg, data !== undefined ? c.gray(JSON.stringify(data)) : ''),
-  success: (scope, msg, data) => console.log(   c.green(`✅ [${scope}]`),   msg, data !== undefined ? c.gray(JSON.stringify(data)) : ''),
-  warn:    (scope, msg, data) => console.warn(  c.yellow(`⚠️  [${scope}]`),  msg, data !== undefined ? c.gray(JSON.stringify(data)) : ''),
-  error:   (scope, msg, data) => console.error( c.red(`❌ [${scope}]`),     msg, data !== undefined ? c.gray(JSON.stringify(data)) : ''),
-  perf:    (scope, label, ms) => console.log(   c.magenta(`⏱️  [${scope}]`), `${label} — ${c.bold(ms + 'ms')}`),
-  event:   (scope, action, data) => console.log(c.cyan(`🎯 [${scope}]`),   `ACTION → ${action}`, data !== undefined ? c.gray(JSON.stringify(data)) : ''),
-  audit:   (msg, data)        => console.log(   c.green(`🔏 [AUDIT]`),     msg, data !== undefined ? c.gray(JSON.stringify(data)) : ''),
-  sec:     (msg, data)        => console.warn(  c.red(`🚨 [SECURITY]`),    msg, data !== undefined ? c.gray(JSON.stringify(data)) : ''),
-  sep:     ()                 => console.log(   c.gray('─'.repeat(60))),
+  // ── Informativos ─────────────────────────────────────────
+  info:    (scope, msg, data) => console.log(
+    ts(), c.brightCyan(`ℹ️  [CTRL:${scope}]`), c.white(msg), fmt(data)
+  ),
+
+  // ── Sucesso ──────────────────────────────────────────────
+  success: (scope, msg, data) => console.log(
+    ts(), c.brightGreen(`✅ [CTRL:${scope}]`), c.brightWhite(msg), fmt(data)
+  ),
+
+  // ── Aviso ────────────────────────────────────────────────
+  warn:    (scope, msg, data) => console.warn(
+    ts(), c.brightYellow(`⚠️  [CTRL:${scope}]`), c.yellow(msg), fmt(data)
+  ),
+
+  // ── Erro ─────────────────────────────────────────────────
+  error:   (scope, msg, data) => console.error(
+    ts(), c.brightRed(`❌ [CTRL:${scope}]`), c.red(c.bold(msg)), fmt(data)
+  ),
+
+  // ── Performance com semáforo de cor ──────────────────────
+  perf:    (scope, label, ms) => console.log(
+    ts(), c.magenta(`⏱️  [CTRL:${scope}]`), c.white(label), '→', fmtMs(ms)
+  ),
+
+  // ── Evento de usuário ─────────────────────────────────────
+  event:   (scope, action, data) => console.log(
+    ts(), c.brightMagenta(`🎯 [CTRL:${scope}]`), c.white(`ACTION → ${action}`), fmt(data)
+  ),
+
+  // ── Auditoria (compliance / LGPD) ────────────────────────
+  audit:   (msg, data) => console.log(
+    ts(), c.brightGreen(`🔏 [CTRL:AUDIT]`), c.white(msg), fmt(data)
+  ),
+
+  // ── Segurança ─────────────────────────────────────────────
+  sec:     (msg, data) => console.warn(
+    ts(), c.danger('🚨 SECURITY'), c.red(c.bold(msg)), fmt(data)
+  ),
+
+  // ── Database ──────────────────────────────────────────────
+  db:      (scope, msg, data) => console.log(
+    ts(), c.brightYellow(`🗄️  [CTRL:DB:${scope}]`), c.white(msg), fmt(data)
+  ),
+
+  // ── PDF / Service ─────────────────────────────────────────
+  pdf:     (msg, data) => console.log(
+    ts(), c.brightMagenta(`🖨️  [CTRL:PDF]`), c.white(msg), fmt(data)
+  ),
+
+  // ── Hash / Crypto ─────────────────────────────────────────
+  hash:    (msg, data) => console.log(
+    ts(), c.brightCyan(`🔐 [CTRL:CRYPTO]`), c.white(msg), fmt(data)
+  ),
+
+  // ── HTTP Request/Response ─────────────────────────────────
+  req:     (method, path, data) => console.log(
+    ts(), c.blue(`📨 [CTRL:REQ]`), c.bold(`${method} ${path}`), fmt(data)
+  ),
+
+  res:     (status, msg, data) => {
+    const statusColor = status < 300 ? c.brightGreen : status < 400 ? c.brightYellow : c.brightRed;
+    console.log(ts(), statusColor(`📤 [CTRL:RES] ${status}`), c.white(msg), fmt(data));
+  },
+
+  // ── Separadores visuais ───────────────────────────────────
+  sep:     ()          => console.log(c.gray('─'.repeat(72))),
+  sepBold: ()          => console.log(c.brightGreen('═'.repeat(72))),
+  sepWarn: ()          => console.log(c.brightYellow('─'.repeat(72))),
+
+  // ── Banner de operação ────────────────────────────────────
+  banner:  (title, emoji = '🏢') => {
+    const line = '═'.repeat(72);
+    console.log(`\n${ANSI.brightGreen}${line}${ANSI.reset}`);
+    console.log(`${ANSI.brightGreen}${emoji}  ${ANSI.bold}${ANSI.brightWhite}${title}${ANSI.reset}`);
+    console.log(`${ANSI.brightGreen}${line}${ANSI.reset}\n`);
+  },
+
+  // ── Tabela key-value para contexto rico ──────────────────
+  table:   (scope, data) => {
+    console.log(ts(), c.cyan(`📊 [CTRL:${scope}]`));
+    Object.entries(data).forEach(([k, v]) => {
+      const key = c.gray(`   ${k.padEnd(28)}`);
+      const val = c.brightWhite(String(v ?? '—'));
+      console.log(`${key} ${val}`);
+    });
+  },
+
+  // ── Resultado final da operação ───────────────────────────
+  result:  (scope, status, data) => {
+    const icon  = status === 'ok' ? '✅' : status === 'warn' ? '⚠️ ' : '❌';
+    const label = status === 'ok' ? 'SUCCESS' : status === 'warn' ? 'WARNING' : 'FAILURE';
+    const color = status === 'ok' ? c.brightGreen : status === 'warn' ? c.brightYellow : c.brightRed;
+    console.log(ts(), color(`${icon} [CTRL:${scope}] ${label}`), fmt(data));
+  },
+
+  // ── Stack trace formatado para leitura ───────────────────
+  stack:   (scope, error) => {
+    const lines = (error.stack || error.message || String(error)).split('\n').slice(0, 6);
+    console.error(ts(), c.brightRed(`💥 [CTRL:${scope}:STACK]`));
+    lines.forEach(line => console.error(c.red(`   ${line}`)));
+  },
 };
 
 // ============================================================
-// 🛡️  HELPER — Contexto da requisição
-// Extrai e centraliza IP, User-Agent e requestId para todos os logs.
+// 🖥️  BOOT — Controller inicializado
 // ============================================================
-function reqContext(req) {
-  return {
-    ip:        req.ip || req.connection?.remoteAddress || 'unknown',
-    userAgent: req.get('User-Agent') || 'unknown',
-    requestId: req.requestId || req.headers['x-request-id'] || `cert_${Date.now()}`,
-    userId:    req.user?.id || null,
-  };
-}
+logger.banner('NexaSpark Certificate Controller v2.0 ENTERPRISE', '🔥');
+logger.info('BOOT', 'Controller carregado', {
+  node:    process.version,
+  env:     process.env.NODE_ENV || 'development',
+  pid:     process.pid,
+  memMB:   Math.round(process.memoryUsage().rss / 1024 / 1024) + ' MB',
+  uptime:  process.uptime().toFixed(1) + 's',
+});
+logger.sep();
 
 // ============================================================
-// 🛡️  HELPER — Sanitiza dados para log
-// CPF NUNCA aparece em texto puro nos logs.
+// 🛡️  HELPERS — Contexto e sanitização
 // ============================================================
+
+/**
+ * Extrai contexto da requisição para logging e auditoria.
+ * Centraliza IP, User-Agent e requestId em um único lugar.
+ */
+function reqContext(req) {
+  const ctx = {
+    ip:        req.ip || req.socket?.remoteAddress || 'unknown',
+    userAgent: (req.get('User-Agent') || 'unknown').substring(0, 120),
+    requestId: req.requestId || req.headers['x-request-id'] || `ctrl_${Date.now()}_${Math.random().toString(36).slice(2,6)}`,
+    userId:    req.user?.id   || null,
+    method:    req.method,
+    path:      req.path,
+    origin:    req.get('Origin') || req.get('Referer') || 'direct',
+  };
+
+  logger.info('REQ:CTX', 'Contexto extraído', {
+    requestId: ctx.requestId,
+    ip:        ctx.ip,
+    userId:    ctx.userId,
+    origin:    ctx.origin,
+  });
+
+  return ctx;
+}
+
+/**
+ * Remove dados sensíveis dos objetos antes de logar.
+ * CPF NUNCA aparece em texto puro — LGPD Art. 37.
+ * Hash completo é truncado para evitar exposição desnecessária.
+ */
 function sanitizeForLog(data) {
   if (!data || typeof data !== 'object') return data;
+
   const clone = { ...data };
+
   if (clone.cpf) {
     const digits = String(clone.cpf).replace(/\D/g, '');
-    clone.cpf = `***.***.***-${digits.slice(-2)}`;
+    clone.cpf    = `***.***.***-${digits.slice(-2)}`;
+    logger.info('LGPD', 'CPF mascarado para log', { sufixo: digits.slice(-2) });
   }
-  if (clone.hash) clone.hash = clone.hash.substring(0, 16) + '...';
+
+  if (clone.hash && clone.hash.length > 16) {
+    clone.hash = clone.hash.substring(0, 16) + '...[TRUNCADO]';
+  }
+
+  if (clone.hashPreview && clone.hashPreview.length > 16) {
+    clone.hashPreview = clone.hashPreview.substring(0, 16) + '...';
+  }
+
+  if (clone.password || clone.senha) {
+    clone.password = clone.senha = '[REDACTED]';
+  }
+
   return clone;
 }
 
-// ============================================================
-// 🔐 HELPER — Gera hash SHA-256 do certificado
-//
-// ⚠️  DECISÃO TÉCNICA DOCUMENTADA:
-//     O hash é composto por: nome | cpf | curso | carga | data | código.
-//     Isso garante que qualquer alteração em qualquer campo
-//     produz um hash completamente diferente — imutabilidade real.
-//     O codigo_verificacao entra no hash para torná-lo único
-//     mesmo que dois alunos façam o mesmo curso no mesmo dia.
-// ============================================================
+/**
+ * Gera hash SHA-256 determinístico do certificado.
+ * Payload normalizado: campos em uppercase, CPF só dígitos.
+ * Mesmo payload → mesmo hash → imutabilidade verificável.
+ *
+ * ⚠️  ALINHADO com CertificateService.generateHash()
+ *     para garantir que o hash gerado aqui == hash do PDF.
+ *     Qualquer divergência entre os dois é um bug crítico.
+ */
 function generateCertificateHash(data) {
-  const { nome_participante, cpf, nome_curso, carga_horaria, data_emissao, codigo_verificacao } = data;
+  const t0 = Date.now();
 
-  const payload = [
-    nome_participante.trim().toUpperCase(),
-    cpf.replace(/\D/g, ''),       // apenas dígitos — formato não altera o hash
-    nome_curso.trim().toUpperCase(),
-    String(carga_horaria),
+  const {
+    nome_participante,
+    cpf,
+    nome_curso,
+    carga_horaria,
     data_emissao,
     codigo_verificacao,
-  ].join('|');
+  } = data;
 
-  const hash = crypto.createHash('sha256').update(payload, 'utf8').digest('hex');
+  const nomeLimpo   = nome_participante.trim().toUpperCase().replace(/\s+/g, ' ');
+  const cpfDigitos  = String(cpf).replace(/\D/g, '');
+  const cursoLimpo  = nome_curso.trim().toUpperCase().replace(/\s+/g, ' ');
+  const cargaStr    = String(carga_horaria);
+  const dataStr     = data_emissao;
+  const codigoLimpo = codigo_verificacao.trim().toUpperCase();
 
-  logger.info('HASH', 'SHA-256 gerado', {
+  const payload = [nomeLimpo, cpfDigitos, cursoLimpo, cargaStr, dataStr, codigoLimpo].join('|');
+  const hash    = crypto.createHash('sha256').update(payload, 'utf8').digest('hex');
+
+  logger.hash('SHA-256 gerado no controller', {
     payloadLength: payload.length,
     hashPrefix:    hash.substring(0, 16) + '...',
+    geradoEm:      `${Date.now() - t0}ms`,
+    algoritmo:     'SHA-256 (FIPS 180-4)',
+    nota:          'Deve ser idêntico ao hash gerado no certificateService',
   });
 
   return hash;
 }
 
-// ============================================================
-// 🔐 HELPER — Gera CPF parcial para exibição pública
-//
-// ⚠️  LGPD: CPF é dado pessoal. A versão parcial exibida
-//     publicamente mostra apenas os 2 últimos dígitos — suficiente
-//     para o titular confirmar que é seu CPF, mas insuficiente
-//     para qualquer uso indevido.
-// ============================================================
+/**
+ * Máscara de CPF para exibição pública (LGPD Art. 37).
+ * Apenas os 2 últimos dígitos são visíveis — suficiente para
+ * o titular confirmar sua identidade, sem risco de exposição.
+ */
 function generateCpfParcial(cpf) {
-  const digits = String(cpf).replace(/\D/g, '');
-  return `***.***.***-${digits.slice(-2)}`;
+  const digits  = String(cpf).replace(/\D/g, '');
+  const masked  = `***.***.***-${digits.slice(-2)}`;
+
+  logger.info('LGPD:CPF', 'CPF mascarado (LGPD Art. 37)', {
+    mascara:   masked,
+    sufixo:    digits.slice(-2),
+    compliant: '✅ apenas 2 últimos dígitos exibidos',
+  });
+
+  return masked;
 }
 
-console.log(c.green(c.bold('🔥 [CertificateController] Módulo inicializado')));
-logger.sep();
-
 // ============================================================
-
+// 🏛️  CERTIFICATE CONTROLLER
+// ============================================================
 class CertificateController {
 
   // ══════════════════════════════════════════════════════════
-  // CREATE CERTIFICATE — Rota autenticada
+  // 🎓 CREATE CERTIFICATE — Rota autenticada (JWT obrigatório)
+  //
+  // Fluxo enterprise:
+  //   1. 🛡️  Valida Cloudinary disponível
+  //   2. 🔑 Gera código de verificação (16 chars hex uppercase)
+  //   3. 👤 Gera CPF parcial (LGPD)
+  //   4. 🔐 Gera hash SHA-256 do certificado
+  //   5. 🗄️  Persiste no banco (antes do PDF — sem orphans)
+  //   6. 🖨️  Gera PDF + upload Cloudinary (não-crítico)
+  //   7. ✅ v2: desestrutura { pdfUrl, hash, hashPreview }
+  //   8. 🗄️  Salva pdf_url + hash_preview no banco
+  //   9. 🔏 Auditoria completa
+  //  10. 📤 Retorna resposta enterprise
   // ══════════════════════════════════════════════════════════
   static async createCertificate(req, res) {
     const t0  = Date.now();
     const ctx = reqContext(req);
 
-    logger.sep();
-    logger.info('CREATE', 'Iniciando criação de certificado', ctx);
+    logger.banner(`EMITINDO CERTIFICADO — User #${req.user?.id}`, '🎓');
+    logger.req('POST', '/api/certificates', {
+      requestId: ctx.requestId,
+      userId:    ctx.userId,
+      ip:        ctx.ip,
+    });
 
     try {
       const usuario_id = req.user.id;
+
       const {
         nome_participante,
         cpf,
@@ -139,47 +383,63 @@ class CertificateController {
         descricao      = null,
       } = req.body;
 
-      logger.info('CREATE', 'Dados recebidos', sanitizeForLog({
-        usuario_id,
-        nome_participante,
-        cpf,
-        nome_curso,
-        carga_horaria,
-        data_emissao,
-        nome_instrutor,
-      }));
+      logger.table('CREATE:INPUT', {
+        'usuario_id':        usuario_id,
+        'nome_participante': nome_participante,
+        'cpf':               `***.***.***-${String(cpf).replace(/\D/g,'').slice(-2)}`,
+        'nome_curso':        nome_curso,
+        'carga_horaria':     carga_horaria + 'h',
+        'data_emissao':      data_emissao,
+        'nome_instrutor':    nome_instrutor || '(não informado)',
+        'requestId':         ctx.requestId,
+        'timestamp':         new Date().toISOString(),
+      });
 
-      // ── Verifica configuração do Cloudinary ───────────────
-      // ⚠️  CORREÇÃO: no original esta verificação estava dentro
-      //     do controller, mas apenas para CLOUDINARY_URL.
-      //     Movemos para uma checagem mais completa e informativa.
+      // ── STEP 1: Valida Cloudinary ──────────────────────────
+      logger.info('CREATE:INIT', '🔍 Validando disponibilidade do Cloudinary...');
+
       if (!process.env.CLOUDINARY_URL && !process.env.CLOUDINARY_CLOUD_NAME) {
-        logger.error('CREATE', 'Cloudinary não configurado', {
-          hint: 'Adicione CLOUDINARY_URL ou CLOUDINARY_CLOUD_NAME no .env',
+        logger.error('CREATE:INIT', '🚨 Cloudinary não configurado — abortando emissão', {
+          hint:      'Adicione CLOUDINARY_URL no Railway → Variables',
+          requestId: ctx.requestId,
+          impact:    'Emissão de PDF impossível sem Cloudinary',
         });
+
+        logger.res(503, 'PDF_SERVICE_UNAVAILABLE');
+
         return res.status(503).json({
           success: false,
           error:   'Serviço de geração de PDF temporariamente indisponível',
           code:    'PDF_SERVICE_UNAVAILABLE',
+          hint:    'Tente novamente em alguns minutos',
         });
       }
 
-      // ── Gera código de verificação único ─────────────────
-      // ⚠️  DECISÃO TÉCNICA: crypto.randomBytes(8) gera 8 bytes
-      //     de entropia real do SO → 64 bits → 16 chars hex.
-      //     Em uppercase fica mais legível para o usuário final.
-      //     Colisão é astronomicamente improvável, mas o banco
-      //     tem constraint UNIQUE e o model trata o erro 23505.
-      const t1 = Date.now();
+      logger.success('CREATE:INIT', '✅ Cloudinary disponível');
+      logger.sep();
+
+      // ── STEP 2: Código de verificação ─────────────────────
+      logger.info('CREATE:CODE', '🔑 Gerando código de verificação único...');
+      const t1                 = Date.now();
       const codigo_verificacao = crypto.randomBytes(8).toString('hex').toUpperCase();
-      logger.perf('CREATE', 'randomBytes()', Date.now() - t1);
-      logger.info('CREATE', 'Código de verificação gerado', { codigo_verificacao });
 
-      // ── Gera CPF parcial ──────────────────────────────────
+      logger.perf('CREATE:CODE', 'crypto.randomBytes(8)', Date.now() - t1);
+      logger.info('CREATE:CODE', 'Código gerado ✅', {
+        codigo_verificacao,
+        entropia:      '64 bits (8 bytes)',
+        formato:       '16 chars hex uppercase',
+        unicidade:     'Garantida por UNIQUE constraint no banco',
+        colisaoRisco:  '1 em 18.446.744.073.709.551.616',
+      });
+      logger.sep();
+
+      // ── STEP 3: CPF parcial (LGPD) ────────────────────────
+      logger.info('CREATE:LGPD', '👤 Gerando CPF parcial (LGPD Art. 37)...');
       const cpf_parcial = generateCpfParcial(cpf);
-      logger.info('CREATE', 'CPF parcial gerado (LGPD)', { cpf_parcial });
+      logger.sep();
 
-      // ── Gera hash SHA-256 ─────────────────────────────────
+      // ── STEP 4: Hash SHA-256 ──────────────────────────────
+      logger.info('CREATE:HASH', '🔐 Gerando assinatura digital SHA-256...');
       const t2   = Date.now();
       const hash = generateCertificateHash({
         nome_participante,
@@ -189,11 +449,18 @@ class CertificateController {
         data_emissao,
         codigo_verificacao,
       });
-      logger.perf('CREATE', 'SHA-256 hash', Date.now() - t2);
+      logger.perf('CREATE:HASH', 'SHA-256 gerado', Date.now() - t2);
+      logger.sep();
 
-      // ── Persiste no banco ─────────────────────────────────
-      logger.info('CREATE', 'Inserindo certificado no banco...');
-      const t3   = Date.now();
+      // ── STEP 5: Persiste no banco (antes do PDF) ──────────
+      // ⚠️  DECISÃO ARQUITETURAL CRÍTICA:
+      //     PDF é gerado APÓS persistir no banco.
+      //     Motivo: se o PDF falhar, o certificado ainda existe
+      //     e pode ser re-gerado sem perda de dados.
+      //     PDF antes do banco criaria PDFs órfãos irrerecuperáveis.
+      logger.db('CREATE', '🗄️  Persistindo certificado no banco de dados...');
+      const t3 = Date.now();
+
       const cert = await Certificate.create({
         usuario_id,
         nome_participante,
@@ -207,24 +474,30 @@ class CertificateController {
         nome_instrutor,
         descricao,
       });
-      logger.perf('CREATE', 'Certificate.create()', Date.now() - t3);
-      logger.success('CREATE', 'Certificado persistido no banco', { id: cert.id });
 
-      // ── Gera PDF (não-crítico) ────────────────────────────
-      // ⚠️  DECISÃO ARQUITETURAL IMPORTANTE:
-      //     A geração do PDF é feita DEPOIS de persistir no banco.
-      //     Se o PDF falhar, o certificado ainda existe e pode ser
-      //     recuperado/re-gerado. O contrário (PDF antes do banco)
-      //     criaria PDFs órfãos sem registro no sistema.
-      //     Falha no PDF → retornamos sucesso com pdf_url: null.
-      //     O frontend deve tratar esse caso e mostrar "PDF em processamento".
-      let pdfUrl = null;
+      logger.perf('CREATE:DB', 'Certificate.create()', Date.now() - t3);
+      logger.success('CREATE:DB', '✅ Certificado persistido no banco', {
+        id:                cert.id,
+        codigo_verificacao: cert.codigo_verificacao,
+        criado_em:         cert.criado_em,
+        hash_no_banco:     '✅ salvo',
+        pdf_ainda:         '⏳ gerando...',
+      });
+      logger.sep();
+
+      // ── STEP 6+7+8: Gera PDF e salva hash_preview ────────
+      // ✅ v2: generatePDF retorna { pdfUrl, hash, hashPreview }
+      //    hash_preview é salvo no banco para a rota /verify retornar
+      //    ao frontend — sem isso, o DNA visual do hash fica null.
+      let pdfUrl      = null;
+      let hashPreview = null;
 
       try {
-        logger.info('CREATE', 'Gerando PDF via CertificateService...');
+        logger.pdf('🖨️  Iniciando geração do PDF via CertificateService...');
         const t4 = Date.now();
 
-        pdfUrl = await CertificateService.generatePDF({
+        // ✅ CORREÇÃO PRINCIPAL v2 — desestrutura o objeto de retorno
+        const serviceResult = await CertificateService.generatePDF({
           id: cert.id,
           nome_participante,
           cpf,
@@ -238,31 +511,99 @@ class CertificateController {
           descricao,
         });
 
-        logger.perf('CREATE', 'PDF generation', Date.now() - t4);
-        logger.success('CREATE', 'PDF gerado com sucesso', { pdfUrl });
+        logger.perf('CREATE:PDF', 'generatePDF() completo', Date.now() - t4);
 
+        // Desestrutura: pdfUrl, hash (confirmação), hashPreview
+        pdfUrl      = serviceResult.pdfUrl;
+        hashPreview = serviceResult.hashPreview;
+
+        logger.pdf('✅ PDF gerado com sucesso', {
+          pdfUrl,
+          hashPreview:    hashPreview ? hashPreview.substring(0, 16) + '...' : null,
+          previewLength:  hashPreview?.length,
+          dnaFrontend:    hashPreview ? '✅ DNA visual disponível' : '❌ preview ausente',
+        });
+
+        // ── Atualiza banco com pdf_url + hash_preview ────────
+        logger.db('UPDATE', '🗄️  Atualizando banco com pdf_url e hash_preview...');
+        const t5 = Date.now();
+
+        // Salva pdf_url
         await Certificate.updateFilePath(cert.id, pdfUrl);
-        logger.success('CREATE', 'pdf_path atualizado no banco');
+        logger.perf('CREATE:DB', 'updateFilePath()', Date.now() - t5);
+        logger.success('CREATE:DB', '✅ pdf_url atualizado no banco', { pdfUrl });
+
+        // ✅ v2: Salva hash_preview no banco
+        // O hash_preview é retornado na rota /verify/:codigo
+        // e exibido como DNA visual (barras coloridas) no frontend.
+        if (hashPreview) {
+          const t6 = Date.now();
+
+          // ⚠️  Certificate.updateHashPreview() deve existir no model
+          //     Se não existir, adicione: UPDATE certificates SET hash_preview = $1 WHERE id = $2
+          if (typeof Certificate.updateHashPreview === 'function') {
+            await Certificate.updateHashPreview(cert.id, hashPreview);
+            logger.perf('CREATE:DB', 'updateHashPreview()', Date.now() - t6);
+            logger.success('CREATE:DB', '✅ hash_preview salvo no banco', {
+              certId:     cert.id,
+              preview:    hashPreview.substring(0, 16) + '...',
+              length:     hashPreview.length,
+              beneficio:  'DNA visual no frontend funcionará ✅',
+            });
+          } else {
+            // Fallback: tenta query direta se o método não existir no model
+            logger.warn('CREATE:DB', '⚠️  Certificate.updateHashPreview não encontrado — usando query direta', {
+              hint:   'Adicione updateHashPreview() ao model Certificate',
+              action: 'Tentando fallback com query direta...',
+            });
+
+            // Importa pool para query direta (fallback de segurança)
+            try {
+              const { pool } = require('../config/database');
+              await pool.query(
+                'UPDATE certificates SET hash_preview = $1, updated_at = NOW() WHERE id = $2',
+                [hashPreview, cert.id]
+              );
+              logger.success('CREATE:DB', '✅ hash_preview salvo via query direta (fallback)', {
+                certId:  cert.id,
+                preview: hashPreview.substring(0, 16) + '...',
+              });
+            } catch (fallbackErr) {
+              logger.error('CREATE:DB', '❌ Falha no fallback de hash_preview — DNA visual não funcionará', {
+                message:   fallbackErr.message,
+                certId:    cert.id,
+                hint:      'Adicione coluna hash_preview na tabela certificates e o método no model',
+                migration: 'ALTER TABLE certificates ADD COLUMN IF NOT EXISTS hash_preview VARCHAR(64);',
+              });
+            }
+          }
+        }
 
       } catch (pdfError) {
-        // PDF falhou mas o certificado foi criado — log claro do motivo
-        logger.error('CREATE', 'Falha na geração do PDF — certificado criado sem PDF', {
-          certId:  cert.id,
-          message: pdfError.message,
-          stack:   pdfError.stack?.split('\n').slice(0, 3).join(' | '),
-          hint:    'PDF pode ser re-gerado posteriormente via endpoint dedicado',
+        // PDF falhou — certificado existe, PDF pode ser re-gerado
+        logger.error('CREATE:PDF', '❌ Falha na geração do PDF — certificado criado sem PDF', {
+          certId:    cert.id,
+          message:   pdfError.message,
+          http_code: pdfError.http_code,
+          hint:      'PDF pode ser re-gerado via endpoint /api/certificates/:id/regenerate-pdf',
+          impacto:   'Certificado válido no banco, apenas sem URL do PDF',
         });
-        // pdfUrl permanece null — retornamos assim mesmo
+        logger.stack('CREATE:PDF', pdfError);
+        // pdfUrl e hashPreview permanecem null — retornamos assim
       }
 
-      // ── Auditoria ─────────────────────────────────────────
-      logger.audit('Certificado criado', {
+      logger.sep();
+
+      // ── STEP 9: Auditoria ─────────────────────────────────
+      logger.audit('Emissão auditada', {
         certId:           cert.id,
         usuario_id,
         nome_participante,
         nome_curso,
         codigo_verificacao,
         pdfGerado:        !!pdfUrl,
+        hashPreviewSalvo: !!hashPreview,
+        ip:               ctx.ip,
       });
 
       await AuditLog.create({
@@ -277,49 +618,66 @@ class CertificateController {
           nome_curso,
           carga_horaria,
           pdfGerado:        !!pdfUrl,
+          hashPreviewSalvo: !!hashPreview,
+          requestId:        ctx.requestId,
         },
       });
 
-      const elapsed = Date.now() - t0;
-      logger.perf('CREATE', 'Fluxo completo de criação', elapsed);
-      logger.success('CREATE', '══ Certificado criado com sucesso ══', {
-        id:                cert.id,
-        codigo_verificacao,
-        pdfGerado:         !!pdfUrl,
-        totalMs:           elapsed,
+      // ── STEP 10: Resposta ─────────────────────────────────
+      const totalMs = Date.now() - t0;
+
+      logger.result('CREATE', 'ok', {
+        certId:           cert.id,
+        codigo:           codigo_verificacao,
+        pdfGerado:        !!pdfUrl,
+        hashPreviewSalvo: !!hashPreview,
+        totalMs,
       });
+
+      logger.table('CREATE:RESPONSE', {
+        'cert.id':          cert.id,
+        'codigo':           codigo_verificacao,
+        'pdf_url':          pdfUrl ? '✅ ' + pdfUrl.substring(0, 60) + '...' : '❌ null',
+        'hash_preview':     hashPreview ? '✅ ' + hashPreview.substring(0, 16) + '...' : '❌ null',
+        'total_ms':         totalMs + 'ms',
+        'dna_visual':       hashPreview ? '✅ disponível no frontend' : '❌ não disponível',
+      });
+
       logger.sep();
+
+      logger.res(201, 'Certificado criado com sucesso', { certId: cert.id });
 
       return res.status(201).json({
         success: true,
         message: 'Certificado emitido com sucesso',
         data: {
-          id:                cert.id,
+          id:                 cert.id,
           codigo_verificacao: cert.codigo_verificacao,
           nome_participante:  cert.nome_participante,
           nome_curso:         cert.nome_curso,
           carga_horaria:      cert.carga_horaria,
           data_emissao:       cert.data_emissao,
           cpf_parcial:        cert.cpf_parcial,
-          hash_preview:       hash.substring(0, 16).toUpperCase() + '...',
+          hash_preview:       hashPreview || null,
           pdf_url:            pdfUrl,
           criado_em:          cert.criado_em,
         },
       });
 
     } catch (error) {
-      const elapsed = Date.now() - t0;
-      logger.error('CREATE', `Erro não tratado após ${elapsed}ms`, {
+      const totalMs = Date.now() - t0;
+
+      logger.error('CREATE', `❌ Erro não tratado após ${totalMs}ms`, {
         message:   error.message,
         code:      error.code,
         requestId: ctx.requestId,
+        userId:    ctx.userId,
       });
-      logger.error('CREATE', 'Stack trace:\n' + error.stack);
+      logger.stack('CREATE', error);
       logger.sep();
 
-      // ⚠️  CORREÇÃO: o original expunha error.message diretamente
-      //     na resposta — isso pode vazar detalhes internos.
-      //     Em produção usamos mensagem genérica. Em dev mostramos o erro.
+      logger.res(500, 'CERT_CREATE_ERROR');
+
       return res.status(500).json({
         success:   false,
         error:     process.env.NODE_ENV === 'development'
@@ -332,35 +690,66 @@ class CertificateController {
   }
 
   // ══════════════════════════════════════════════════════════
-  // VERIFY CERTIFICATE — Rota pública
+  // 🔍 VERIFY CERTIFICATE — Rota pública (sem autenticação)
+  //
+  // ✅ v2: retorna hash_preview real do banco
+  //    — frontend exibe DNA visual (barras coloridas SHA-256)
+  //    — hash completo NUNCA é retornado (dado interno)
+  //
+  // Segurança: nunca retorna CPF completo, hash completo,
+  // usuario_id ou qualquer dado sensível interno.
   // ══════════════════════════════════════════════════════════
   static async verifyCertificate(req, res) {
     const t0  = Date.now();
     const ctx = reqContext(req);
 
     logger.sep();
-    logger.info('VERIFY', 'Verificação pública iniciada', ctx);
+    logger.req('GET', `/api/certificates/verify/${req.params.codigo}`, {
+      requestId: ctx.requestId,
+      ip:        ctx.ip,
+      origin:    ctx.origin,
+    });
+    logger.info('VERIFY', '🔍 Verificação pública iniciada', {
+      codigo:    req.params.codigo,
+      requestId: ctx.requestId,
+      userAgent: ctx.userAgent.substring(0, 60),
+    });
 
     try {
       const { codigo } = req.params;
 
-      logger.info('VERIFY', 'Buscando certificado por código', { codigo });
+      // ── Busca no banco ────────────────────────────────────
+      logger.db('VERIFY', '🗄️  Buscando certificado por código...', { codigo });
+      const t1 = Date.now();
 
       const certificate = await Certificate.findByVerificationCode(codigo);
 
-      if (!certificate) {
-        logger.warn('VERIFY', 'Certificado não encontrado', { codigo, ip: ctx.ip });
+      logger.perf('VERIFY:DB', 'findByVerificationCode()', Date.now() - t1);
 
-        // Auditamos tentativas inválidas também —
-        // detecta scraping ou tentativas de enumerar certificados
+      if (!certificate) {
+        logger.warn('VERIFY', '⚠️  Certificado não encontrado', {
+          codigo,
+          ip:        ctx.ip,
+          userAgent: ctx.userAgent.substring(0, 60),
+          hint:      'Pode ser scraping ou código inválido',
+        });
+
+        // ⚠️  Auditamos tentativas inválidas — detecta enumeração
         await AuditLog.create({
           usuario_id: null,
           acao:       AuditLog.ACTIONS.CERT_VERIFIED,
           detalhe:    `Verificação FALHOU — código não encontrado: ${codigo}`,
           ip_address: ctx.ip,
           user_agent: ctx.userAgent,
-          metadata:   { codigo, encontrado: false },
+          metadata:   {
+            codigo,
+            encontrado: false,
+            requestId:  ctx.requestId,
+            suspicious: codigo.length > 32 ? true : false,
+          },
         });
+
+        logger.res(404, 'CERT_NOT_FOUND');
 
         return res.status(404).json({
           success: false,
@@ -369,52 +758,70 @@ class CertificateController {
         });
       }
 
-      logger.success('VERIFY', 'Certificado encontrado', {
-        id:               certificate.id,
+      logger.success('VERIFY:DB', '✅ Certificado encontrado', {
+        id:                certificate.id,
         nome_participante: certificate.nome_participante,
         nome_curso:        certificate.nome_curso,
+        hash_preview_db:   certificate.hash_preview
+          ? certificate.hash_preview.substring(0, 16) + '...'
+          : '❌ null (hash_preview não salvo no banco)',
+        pdf_path:          certificate.pdf_path ? '✅ presente' : '❌ null',
       });
+      logger.sep();
 
       // ── Incrementa contador + histórico (paralelo) ────────
-      // ⚠️  MELHORIA: executamos os dois em paralelo com Promise.allSettled.
-      //     No original eram dois awaits sequenciais — desnecessário,
-      //     pois um não depende do outro.
-      //     allSettled garante que ambos tentam executar mesmo se um falhar,
-      //     sem bloquear a resposta ao usuário.
-      const t1 = Date.now();
+      // ⚠️  Promise.allSettled: ambos tentam executar independente
+      //     de falha um do outro — não bloqueia a resposta.
+      logger.info('VERIFY:AUDIT', '📈 Incrementando contador + salvando histórico (paralelo)...');
+      const t2 = Date.now();
+
       const [incrResult, histResult] = await Promise.allSettled([
         Certificate.incrementVerification(certificate.id),
         Certificate.addVerificationHistory({
-          certificate_id:    certificate.id,
+          certificate_id:     certificate.id,
           codigo_verificacao: codigo,
           ip_address:         ctx.ip,
           user_agent:         ctx.userAgent,
         }),
       ]);
 
-      logger.perf('VERIFY', 'increment + history (paralelo)', Date.now() - t1);
+      logger.perf('VERIFY:AUDIT', 'increment + history (Promise.allSettled)', Date.now() - t2);
 
       if (incrResult.status === 'rejected') {
-        logger.error('VERIFY', 'Falha ao incrementar contador — não crítico', {
-          reason: incrResult.reason?.message,
+        logger.warn('VERIFY:AUDIT', '⚠️  Falha ao incrementar contador (não crítico)', {
+          reason:   incrResult.reason?.message,
+          certId:   certificate.id,
+          impacto:  'Contador de verificações não atualizado, experiência não afetada',
+        });
+      } else {
+        logger.success('VERIFY:AUDIT', '✅ Contador incrementado', {
+          novoTotal: incrResult.value,
         });
       }
+
       if (histResult.status === 'rejected') {
-        logger.error('VERIFY', 'Falha ao salvar histórico — não crítico', {
-          reason: histResult.reason?.message,
+        logger.warn('VERIFY:AUDIT', '⚠️  Falha ao salvar histórico (não crítico)', {
+          reason:  histResult.reason?.message,
+          certId:  certificate.id,
+          impacto: 'Histórico de verificações não registrado',
         });
+      } else {
+        logger.success('VERIFY:AUDIT', '✅ Histórico de verificação salvo');
       }
 
       const newVerificationCount = incrResult.status === 'fulfilled'
         ? incrResult.value
         : (certificate.verificacoes_count || 0) + 1;
 
-      // ── Auditoria ─────────────────────────────────────────
-      logger.audit('Certificado verificado publicamente', {
-        certId:           certificate.id,
+      logger.sep();
+
+      // ── Auditoria da verificação bem-sucedida ────────────
+      logger.audit('Verificação pública auditada', {
+        certId:            certificate.id,
         codigo,
-        ip:               ctx.ip,
+        ip:                ctx.ip,
         totalVerificacoes: newVerificationCount,
+        requestId:         ctx.requestId,
       });
 
       await AuditLog.create({
@@ -428,24 +835,73 @@ class CertificateController {
           codigo,
           totalVerificacoes: newVerificationCount,
           encontrado:        true,
+          requestId:         ctx.requestId,
         },
       });
 
-      const elapsed = Date.now() - t0;
-      logger.perf('VERIFY', 'Fluxo completo de verificação', elapsed);
-      logger.success('VERIFY', '══ Verificação concluída com sucesso ══', {
-        id:               certificate.id,
+      // ── Monta hash_preview para retorno ──────────────────
+      // ✅ v2: usa hash_preview do banco (salvo na emissão)
+      //    Se não tiver (certificados antigos), tenta derivar do hash
+      //    Se não tiver hash, retorna null (sem DNA visual)
+      let hashPreviewFinal = null;
+
+      if (certificate.hash_preview) {
+        // ✅ Caminho feliz — hash_preview salvo na emissão v2
+        hashPreviewFinal = certificate.hash_preview;
+        logger.success('VERIFY:HASH', '✅ hash_preview lido do banco (v2)', {
+          preview: hashPreviewFinal.substring(0, 16) + '...',
+          fonte:   'banco de dados (campo hash_preview)',
+        });
+      } else if (certificate.hash) {
+        // Fallback para certificados antigos que têm hash mas não hash_preview
+        hashPreviewFinal = certificate.hash.substring(0, 32).toUpperCase();
+        logger.warn('VERIFY:HASH', '⚠️  hash_preview ausente — derivando do hash (certificado antigo)', {
+          preview:   hashPreviewFinal.substring(0, 16) + '...',
+          fonte:     'hash completo do banco (fallback)',
+          hint:      'Certificados novos terão hash_preview salvo diretamente',
+          migration: 'Rode: UPDATE certificates SET hash_preview = UPPER(SUBSTRING(hash, 1, 32)) WHERE hash_preview IS NULL',
+        });
+      } else {
+        // Sem dados — DNA visual ficará indisponível
+        logger.warn('VERIFY:HASH', '⚠️  hash e hash_preview ausentes — DNA visual indisponível', {
+          certId: certificate.id,
+          hint:   'Certificado pode ter sido criado antes da implementação do hash',
+        });
+      }
+
+      // ── Monta e retorna resposta pública ─────────────────
+      const totalMs = Date.now() - t0;
+
+      logger.result('VERIFY', 'ok', {
+        certId:            certificate.id,
         codigo,
         totalVerificacoes: newVerificationCount,
-        totalMs:           elapsed,
+        hashPreview:       hashPreviewFinal ? '✅ disponível' : '❌ null',
+        totalMs,
       });
-      logger.sep();
 
-      // ⚠️  SEGURANÇA: a resposta pública NUNCA retorna:
-      //     - CPF completo (só cpf_parcial — LGPD)
-      //     - hash completo (apenas hash_preview — não expõe dado interno)
-      //     - usuario_id (não revelamos quem emitiu)
-      //     - pdf_path interno (retornamos como pdf_url renomeado)
+      logger.table('VERIFY:RESPONSE', {
+        'cert.id':           certificate.id,
+        'participante':      certificate.nome_participante,
+        'curso':             certificate.nome_curso.substring(0, 40),
+        'verificacoes':      newVerificationCount,
+        'hash_preview':      hashPreviewFinal ? hashPreviewFinal.substring(0, 16) + '...' : '❌ null',
+        'pdf_url':           certificate.pdf_path ? '✅ presente' : '❌ null',
+        'total_ms':          totalMs + 'ms',
+      });
+
+      logger.sep();
+      logger.res(200, 'Verificação concluída com sucesso', {
+        certId: certificate.id,
+        totalMs,
+      });
+
+      // ⚠️  SEGURANÇA — A resposta pública NUNCA expõe:
+      //     ❌ CPF completo (LGPD Art. 37)
+      //     ❌ Hash SHA-256 completo (dado interno)
+      //     ❌ usuario_id (identidade do emissor)
+      //     ❌ pdf_path interno (renomeado para pdf_url)
+      //     ❌ Dados de outros usuários
       return res.json({
         success: true,
         data: {
@@ -455,19 +911,14 @@ class CertificateController {
             cpf:  certificate.cpf_parcial,
           },
           curso: {
-            nome:         certificate.nome_curso,
+            nome:          certificate.nome_curso,
             carga_horaria: certificate.carga_horaria,
             data_emissao:  certificate.data_emissao,
             instrutor:     certificate.nome_instrutor || null,
           },
           verificacao: {
-            codigo:            certificate.codigo_verificacao,
-            hash_preview:      certificate.hash
-              // ⚠️  hash NÃO vem do findByVerificationCode (foi excluído do SELECT)
-              //     hash_preview é gerado aqui apenas se tivermos acesso ao hash.
-              //     Como a rota pública não retorna hash do banco, usamos o código.
-              ? certificate.hash.substring(0, 12).toUpperCase()
-              : null,
+            codigo:             certificate.codigo_verificacao,
+            hash_preview:       hashPreviewFinal, // ✅ v2: real, não null
             total_verificacoes: newVerificationCount,
             verificado_em:      new Date().toISOString(),
           },
@@ -476,13 +927,18 @@ class CertificateController {
       });
 
     } catch (error) {
-      const elapsed = Date.now() - t0;
-      logger.error('VERIFY', `Erro não tratado após ${elapsed}ms`, {
+      const totalMs = Date.now() - t0;
+
+      logger.error('VERIFY', `❌ Erro não tratado após ${totalMs}ms`, {
         message:   error.message,
+        code:      error.code,
         requestId: ctx.requestId,
+        ip:        ctx.ip,
       });
-      logger.error('VERIFY', 'Stack trace:\n' + error.stack);
+      logger.stack('VERIFY', error);
       logger.sep();
+
+      logger.res(500, 'CERT_VERIFY_ERROR');
 
       return res.status(500).json({
         success:   false,
@@ -494,38 +950,51 @@ class CertificateController {
   }
 
   // ══════════════════════════════════════════════════════════
-  // GET USER CERTIFICATES — Rota autenticada
+  // 📋 GET USER CERTIFICATES — Rota autenticada
   // ══════════════════════════════════════════════════════════
   static async getUserCertificates(req, res) {
     const t0  = Date.now();
     const ctx = reqContext(req);
 
     logger.sep();
-    logger.info('LIST', 'Listando certificados do usuário', ctx);
+    logger.req('GET', '/api/certificates', {
+      requestId: ctx.requestId,
+      userId:    ctx.userId,
+    });
 
     try {
       const usuario_id = req.user.id;
+      const limit      = Math.min(parseInt(req.query.limit)  || 50, 200); // máximo 200
+      const offset     = Math.max(parseInt(req.query.offset) || 0,  0);   // mínimo 0
+      const search     = req.query.search || null;
 
-      // ⚠️  MELHORIA: suporte a paginação via query params
-      const limit  = parseInt(req.query.limit)  || 50;
-      const offset = parseInt(req.query.offset) || 0;
+      logger.table('LIST:PARAMS', {
+        'usuario_id': usuario_id,
+        'limit':      limit,
+        'offset':     offset,
+        'search':     search || '(nenhum)',
+        'requestId':  ctx.requestId,
+      });
 
-      logger.info('LIST', 'Parâmetros de listagem', { usuario_id, limit, offset });
-
+      const t1 = Date.now();
       const [certificates, total] = await Promise.all([
         Certificate.findByUserId(usuario_id, { limit, offset }),
         Certificate.countByUserId(usuario_id),
       ]);
 
-      const elapsed = Date.now() - t0;
-      logger.perf('LIST', 'findByUserId + countByUserId (paralelo)', elapsed);
-      logger.success('LIST', 'Certificados listados', {
+      logger.perf('LIST:DB', 'findByUserId + countByUserId (paralelo)', Date.now() - t1);
+      logger.success('LIST', '✅ Certificados listados', {
         usuario_id,
-        count:  certificates.length,
+        count:   certificates.length,
         total,
         offset,
         limit,
+        hasMore: offset + certificates.length < total,
       });
+
+      const totalMs = Date.now() - t0;
+      logger.perf('LIST', 'Fluxo completo de listagem', totalMs);
+      logger.res(200, 'Lista retornada com sucesso', { count: certificates.length, total });
       logger.sep();
 
       return res.json({
@@ -536,17 +1005,20 @@ class CertificateController {
           limit,
           offset,
           hasMore: offset + certificates.length < total,
+          pages:   Math.ceil(total / limit),
         },
       });
 
     } catch (error) {
-      logger.error('LIST', 'Erro ao listar certificados', {
+      logger.error('LIST', '❌ Erro ao listar certificados', {
         message:   error.message,
         userId:    ctx.userId,
         requestId: ctx.requestId,
       });
-      logger.error('LIST', 'Stack:\n' + error.stack);
+      logger.stack('LIST', error);
       logger.sep();
+
+      logger.res(500, 'CERT_LIST_ERROR');
 
       return res.status(500).json({
         success:   false,
@@ -558,29 +1030,42 @@ class CertificateController {
   }
 
   // ══════════════════════════════════════════════════════════
-  // GET CERTIFICATE BY ID — Rota autenticada
+  // 🔎 GET CERTIFICATE BY ID — Rota autenticada
   // ══════════════════════════════════════════════════════════
   static async getCertificateById(req, res) {
     const t0  = Date.now();
     const ctx = reqContext(req);
 
     logger.sep();
-    logger.info('GET_BY_ID', 'Buscando certificado por ID', ctx);
+    logger.req('GET', `/api/certificates/${req.params.id}`, {
+      requestId: ctx.requestId,
+      userId:    ctx.userId,
+    });
 
     try {
       const { id }     = req.params;
       const usuario_id = req.user.id;
 
-      logger.info('GET_BY_ID', 'Parâmetros', { id, usuario_id });
+      logger.db('GET_BY_ID', '🗄️  Buscando certificado por ID...', {
+        id,
+        usuario_id,
+        requestId: ctx.requestId,
+      });
 
+      const t1          = Date.now();
       const certificate = await Certificate.findById(id, usuario_id);
+      logger.perf('GET_BY_ID:DB', 'findById()', Date.now() - t1);
 
       if (!certificate) {
-        logger.warn('GET_BY_ID', 'Certificado não encontrado ou não pertence ao usuário', {
+        logger.warn('GET_BY_ID', '⚠️  Certificado não encontrado ou não pertence ao usuário', {
           id,
           usuario_id,
           requestId: ctx.requestId,
+          sec_note:  'Pode ser tentativa de acesso a dados de outro usuário',
         });
+
+        logger.res(404, 'CERT_NOT_FOUND');
+
         return res.status(404).json({
           success: false,
           error:   'Certificado não encontrado',
@@ -588,19 +1073,27 @@ class CertificateController {
         });
       }
 
-      // Auditamos consultas individuais — saber quem acessou o quê
+      logger.success('GET_BY_ID', '✅ Certificado encontrado', {
+        id:               certificate.id,
+        nome_participante: certificate.nome_participante,
+        hash_preview:     certificate.hash_preview
+          ? certificate.hash_preview.substring(0, 16) + '...'
+          : '❌ null',
+      });
+
+      // Auditamos consultas individuais — rastreabilidade total
       await AuditLog.create({
         usuario_id,
         acao:       AuditLog.ACTIONS.CERT_VIEWED,
         detalhe:    `Certificado visualizado: ID ${id}`,
         ip_address: ctx.ip,
         user_agent: ctx.userAgent,
-        metadata:   { certId: id },
+        metadata:   { certId: id, requestId: ctx.requestId },
       });
 
-      const elapsed = Date.now() - t0;
-      logger.perf('GET_BY_ID', 'Fluxo completo', elapsed);
-      logger.success('GET_BY_ID', 'Certificado retornado', { id, usuario_id });
+      const totalMs = Date.now() - t0;
+      logger.perf('GET_BY_ID', 'Fluxo completo', totalMs);
+      logger.res(200, 'Certificado retornado', { id, totalMs });
       logger.sep();
 
       return res.json({
@@ -609,14 +1102,16 @@ class CertificateController {
       });
 
     } catch (error) {
-      logger.error('GET_BY_ID', 'Erro ao buscar certificado', {
+      logger.error('GET_BY_ID', '❌ Erro ao buscar certificado', {
         message:   error.message,
         id:        req.params.id,
         userId:    ctx.userId,
         requestId: ctx.requestId,
       });
-      logger.error('GET_BY_ID', 'Stack:\n' + error.stack);
+      logger.stack('GET_BY_ID', error);
       logger.sep();
+
+      logger.res(500, 'CERT_GET_ERROR');
 
       return res.status(500).json({
         success:   false,

@@ -45,8 +45,11 @@ function sanitizeForLog(obj) {
 //     diretamente para o cliente — verboso e inconsistente.
 //     Agora formatamos em array de { field, message } limpo e legível.
 // ============================================================
-function formatZodErrors(errors) {
-  return errors.map((err) => ({
+function formatZodErrors(zodError) {
+  // ⚠️  CORREÇÃO: Zod usa .issues (não .errors) na versão atual
+  //     .errors é um alias que pode ser undefined em alguns contextos
+  const issues = zodError?.issues || zodError?.errors || [];
+  return issues.map((err) => ({
     field:   err.path.join('.') || 'unknown',
     message: err.message,
     code:    err.code,
@@ -85,7 +88,7 @@ function validateSchema(schema) {
       const result = schema.body.safeParse(req.body);
 
       if (!result.success) {
-        const errors = formatZodErrors(result.error.errors);
+        const errors = formatZodErrors(result.error);
         logger.warn(`Body inválido em ${route}`, { errors, requestId });
 
         return res.status(400).json({
@@ -109,7 +112,7 @@ function validateSchema(schema) {
       const result = schema.params.safeParse(req.params);
 
       if (!result.success) {
-        const errors = formatZodErrors(result.error.errors);
+        const errors = formatZodErrors(result.error);
         logger.warn(`Params inválidos em ${route}`, { errors, requestId });
 
         return res.status(400).json({
@@ -131,7 +134,7 @@ function validateSchema(schema) {
       const result = schema.query.safeParse(req.query);
 
       if (!result.success) {
-        const errors = formatZodErrors(result.error.errors);
+        const errors = formatZodErrors(result.error);
         logger.warn(`Query inválida em ${route}`, { errors, requestId });
 
         return res.status(400).json({

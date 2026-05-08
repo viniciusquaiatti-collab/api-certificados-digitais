@@ -4,7 +4,7 @@
 // Rotas de emissão e verificação de certificados digitais.
 //
 // ⚠️  ADIÇÕES nesta versão:
-//   -  rate limit para POST /
+//   - certEmitLimiter: rate limit para POST /
 //     10 emissões/minuto por USUÁRIO AUTENTICADO (userId)
 //     Fallback por IP se token não disponível.
 //     Impede abuse de créditos e ataques de spam.
@@ -23,6 +23,7 @@
 const express               = require('express');
 const router                = express.Router();
 const rateLimit             = require('express-rate-limit');
+const { ipKeyGenerator }    = require('express-rate-limit');
 const CertificateController = require('../controllers/certificateController');
 const authMiddleware        = require('../middlewares/authMiddleware');
 const validateSchema        = require('../middlewares/validateSchema');
@@ -93,9 +94,14 @@ const certEmitLimiter = rateLimit({
   max:      10,        // máximo 10 emissões por minuto
 
   // keyGenerator: userId do JWT > IP como fallback
+  // ⚠️  ipKeyGenerator: helper obrigatório do express-rate-limit v8
+  //     normaliza IPv4-mapped IPv6 (::ffff:1.2.3.4 → 1.2.3.4)
+  //     sem isso, usuários IPv6 bypassam o limite
   keyGenerator: (req) => {
-    const key      = req.user?.id ? `user_${req.user.id}` : `ip_${req.ip}`;
-    const mode     = req.user?.id ? 'userId (seguro)' : 'ip (fallback — sem req.user)';
+    const key  = req.user?.id
+      ? `user_${req.user.id}`
+      : `ip_${ipKeyGenerator(req)}`; // ← helper correto para IPv6
+    const mode = req.user?.id ? 'userId (seguro)' : 'ip (fallback)';
 
     logger.warn('CERT:RATELIMIT:EMIT', 'Key gerada para rate limit de emissão', {
       key,
@@ -151,7 +157,7 @@ const verifyLimiter = rateLimit({
   windowMs: 60 * 1000, // janela de 1 minuto
   max:      30,        // 30 verificações por minuto por IP
 
-  keyGenerator: (req) => req.ip,
+  keyGenerator: (req) => ipKeyGenerator(req), // ← helper correto para IPv6
 
   handler: (req, res) => {
     logger.sec('🚨 RATE LIMIT VERIFICAÇÃO ATINGIDO — possível enumeração', {

@@ -4,39 +4,40 @@
 // Certificação Digital Enterprise
 //
 // ⚠️  ADIÇÕES nesta versão:
+//   - helmet: segurança de headers HTTP (posição: PRIMEIRO middleware)
+//     Configurado especificamente para stack Cloudflare + Railway:
+//     - hsts DESABILITADO → Cloudflare já injeta HSTS, duplicar causa conflito
+//     - contentSecurityPolicy DESABILITADO → API serve JSON, não HTML
+//     - crossOriginResourcePolicy → 'cross-origin' para Vercel + Cloudinary
 //   - express-session: necessário para o Passport funcionar
 //     durante o redirect cycle do OAuth. TTL de 5 min.
 //   - passport.initialize() + passport.session(): middleware
 //     do Passport registrado após session e body parsers.
 //   - adminRoutes: estava importado mas nunca registrado —
 //     corrigido com app.use('/api/admin', adminRoutes).
-//   - Log de inicialização de cada módulo OAuth.
 // ============================================================
 
 require('dotenv').config();
 
 const express   = require('express');
+const helmet    = require('helmet');    // ← NOVO
 const cors      = require('cors');
 const path      = require('path');
 const rateLimit = require('express-rate-limit');
-const session   = require('express-session');   // ← NOVO: OAuth session
+const session   = require('express-session');
 const db        = require('./src/database/db');
 
-// ── Passport — carregado após dotenv para ter acesso às env vars ──
-// ⚠️  A ordem importa: dotenv → require passport
-//     O passport.js lê process.env.GOOGLE_CLIENT_ID no require
-const passport = require('./src/config/passport'); // ← NOVO
+const passport = require('./src/config/passport');
 
-// ── Rotas ─────────────────────────────────────────────────────
 const authRoutes        = require('./src/routes/authRoutes');
 const certificateRoutes = require('./src/routes/certificateRoutes');
-const adminRoutes        = require('./src/routes/adminRoutes');
+const adminRoutes       = require('./src/routes/adminRoutes');
 
 const app  = express();
 const PORT = process.env.PORT || 8080;
 
 // ============================================================
-// 🎨 LOGGER CENTRALIZADO — ANSI colors, sem dependência externa
+// 🎨 LOGGER CENTRALIZADO
 // ============================================================
 const c = {
   green:   (s) => `\x1b[32m${s}\x1b[0m`,
@@ -92,8 +93,6 @@ logger.info('APP', 'NODE_ENV',  process.env.NODE_ENV || 'development');
 logger.info('APP', 'PORT',      PORT);
 logger.info('APP', 'Timestamp', new Date().toISOString());
 
-// ⚠️  Log das variáveis OAuth na inicialização
-//     Permite detectar variáveis ausentes ANTES do primeiro login
 console.log(c.cyan(`ℹ️  [APP:OAUTH_ENV]`), c.gray(JSON.stringify({
   GOOGLE_CLIENT_ID:     process.env.GOOGLE_CLIENT_ID     ? process.env.GOOGLE_CLIENT_ID.substring(0, 12) + '...'  : '❌ AUSENTE',
   GOOGLE_CLIENT_SECRET: process.env.GOOGLE_CLIENT_SECRET ? '[REDACTED ✅]'                                         : '❌ AUSENTE',
@@ -105,20 +104,71 @@ logger.subsep();
 
 // ============================================================
 // ⚙️  TRUST PROXY
-// Necessário para Railway — garante req.ip correto atrás
-// do reverse proxy (sem isso, req.ip seria sempre 127.0.0.1).
 // ============================================================
 app.set('trust proxy', 1);
 logger.success('APP', 'trust proxy configurado');
 
 // ============================================================
-// 🌐 CORS
+// 🛡️  HELMET — Segurança de Headers HTTP
 //
-// ⚠️  Whitelist explícita de origens permitidas.
-//     OAuth requer que o Google consiga redirecionar para o
-//     backend — mas o CORS só se aplica a requisições browser
-//     com Origin header. O redirect do Google não tem Origin,
-//     então não é bloqueado pelo CORS (passa pelo !origin check).
+// ⚠️  POSIÇÃO OBRIGATÓRIA: PRIMEIRO middleware após trust proxy.
+//     Helmet deve rodar ANTES de cors, session, passport e rotas.
+//     Garante que TODOS os responses terão os headers seguros,
+//     incluindo erros do CORS e do rate limiter.
+//
+// DECISÕES DE CONFIGURAÇÃO — específicas para NexaSpark:
+//
+//   hsts: false
+//     → Cloudflare gerencia HSTS via SSL/TLS → Edge Certificates.
+//       Header duplicado causa comportamento indefinido em browsers.
+//
+//   contentSecurityPolicy: false
+//     → API serve exclusivamente JSON. CSP é para apps HTML/CSS/JS.
+//       Habilitado aqui bloquearia requests legítimos do frontend Vercel.
+//
+//   crossOriginResourcePolicy: 'cross-origin'
+//     → Frontend Vercel (nexaspark.com.br) acessa API Railway (domínio diferente).
+//       Cloudinary também precisa servir PDFs cross-origin.
+//       Sem isso, browsers modernos bloqueiam recursos cross-origin.
+//
+// HEADERS ATIVOS após esta configuração:
+//   ✅ X-DNS-Prefetch-Control: off          → evita vazamento de DNS
+//   ✅ X-Frame-Options: DENY                → bloqueia clickjacking (iframe malicioso)
+//   ✅ X-Content-Type-Options: nosniff      → bloqueia MIME sniffing
+//   ✅ X-XSS-Protection: 0                  → desativa auditor XSS legado (correto)
+//   ✅ Referrer-Policy: no-referrer         → não vaza URL de origem nos requests
+//   ✅ Origin-Agent-Cluster: ?1             → isolamento de processo no browser
+//   ✅ X-Permitted-Cross-Domain-Policies: none → bloqueia Adobe Flash/PDF cross-domain
+//   ✅ X-Powered-By: [REMOVIDO]             → hacker não sabe que é Express/Node
+//
+// Ref: https://helmetjs.github.io/
+// ============================================================
+app.use(helmet({
+  hsts:                  false,
+  contentSecurityPolicy: false,
+  crossOriginResourcePolicy: { policy: 'cross-origin' },
+  dnsPrefetchControl:           { allow: false },
+  frameguard:                   { action: 'deny' },
+  noSniff:                      true,
+  referrerPolicy:               { policy: 'no-referrer' },
+  permittedCrossDomainPolicies: { permittedPolicies: 'none' },
+  originAgentCluster:           true,
+  hidePoweredBy:                true,
+}));
+
+logger.success('APP', '🛡️  Helmet configurado ✅', {
+  hsts:                  'DESABILITADO — Cloudflare gerencia',
+  contentSecurityPolicy: 'DESABILITADO — API JSON pura',
+  crossOriginResource:   'cross-origin — Vercel + Cloudinary',
+  frameguard:            'DENY — anti-clickjacking',
+  noSniff:               'ATIVO — anti-MIME sniffing',
+  referrerPolicy:        'no-referrer — sem vazamento de URL',
+  hidePoweredBy:         'ATIVO — X-Powered-By removido',
+  dnsPrefetch:           'OFF — sem vazamento de DNS',
+});
+
+// ============================================================
+// 🌐 CORS
 // ============================================================
 const ALLOWED_ORIGINS = (process.env.ALLOWED_ORIGINS || '')
   .split(',')
@@ -134,14 +184,11 @@ if (ALLOWED_ORIGINS.length === 0) {
 
 const corsOptions = {
   origin: (origin, callback) => {
-    // Permite requisições sem origin (Postman, curl, redirects OAuth)
     if (!origin) return callback(null, true);
-
     if (ALLOWED_ORIGINS.includes(origin)) {
       logger.info('CORS', `Origem permitida → ${origin}`);
       return callback(null, true);
     }
-
     logger.sec(`Origem bloqueada pelo CORS → ${origin}`, { origin });
     return callback(new Error(`CORS: origem não permitida — ${origin}`));
   },
@@ -162,32 +209,16 @@ logger.success('APP', 'Body parsers configurados (limit: 1mb)');
 
 // ============================================================
 // 🔐 EXPRESS-SESSION
-//
-// ⚠️  NECESSÁRIO para o Passport funcionar no redirect cycle
-//     do OAuth. NÃO usamos session para autenticação real —
-//     nossa auth é 100% JWT (stateless).
-//
-// A session existe apenas para o Passport armazenar o estado
-// temporário entre o redirect para o Google e o callback de volta.
-// Após o callback, o JWT é gerado e a session não é mais usada.
-//
-// Configurações de segurança:
-//   - secret: reutiliza JWT_SECRET (sem nova variável de env)
-//   - secure: true em produção (HTTPS only via Cloudflare)
-//   - httpOnly: true (não acessível via JS — proteção XSS)
-//   - sameSite: 'lax' (permite o redirect cross-site do Google)
-//   - maxAge: 5 minutos (suficiente para o callback, muito curto
-//     para ser explorado como vetor de ataque)
 // ============================================================
 app.use(session({
   secret:            process.env.JWT_SECRET,
   resave:            false,
   saveUninitialized: false,
-  name:              'nexaspark.sid', // ⚠️  nome customizado evita fingerprinting
+  name:              'nexaspark.sid',
   cookie: {
     secure:   process.env.NODE_ENV === 'production',
     httpOnly: true,
-    maxAge:   5 * 60 * 1000, // 5 minutos — só para o fluxo OAuth
+    maxAge:   5 * 60 * 1000,
     sameSite: 'lax',
   },
 }));
@@ -202,31 +233,19 @@ logger.success('APP', 'express-session configurado', {
 });
 
 // ============================================================
-// 🛂 PASSPORT — Middleware de autenticação OAuth
-//
-// ⚠️  ORDEM OBRIGATÓRIA:
-//   1. express-session (acima) — Passport precisa da session
-//   2. passport.initialize()   — inicializa o Passport
-//   3. passport.session()      — lê/escreve usuário na session
-//
-// Deve vir APÓS: cors, body parsers, session
-// Deve vir ANTES: rotas
+// 🛂 PASSPORT
 // ============================================================
 app.use(passport.initialize());
 app.use(passport.session());
 
 logger.success('APP', 'Passport inicializado', {
   strategy:  'google-oauth20',
-  session:   false, // rotas usam session: false — JWT-based
+  session:   false,
   serialize: 'user.id only',
 });
 
 // ============================================================
 // 📋 MIDDLEWARE DE REQUEST/RESPONSE LOGGING
-//
-// ⚠️  Headers sensíveis mascarados antes do log.
-//     Body com senha sanitizado.
-//     requestId único para correlação entre todos os logs.
 // ============================================================
 function sanitizeHeaders(headers) {
   const clone = { ...headers };
@@ -281,21 +300,18 @@ app.use((req, res, next) => {
 });
 
 // ============================================================
-// 📁 ARQUIVOS ESTÁTICOS — Certificados gerados
+// 📁 ARQUIVOS ESTÁTICOS
 // ============================================================
 app.use(
   '/certificates',
   express.static(path.join(__dirname, 'src/certificates'), {
-    index: false, // ⚠️  SEGURANÇA: desativa directory listing
+    index: false,
   })
 );
 logger.success('APP', 'Static files: /certificates → src/certificates');
 
 // ============================================================
 // 🚦 RATE LIMITING
-//
-// Auth (login/register/OAuth) → 20 req/15min por IP
-// Global → 100 req/15min por IP
 // ============================================================
 const globalLimiter = rateLimit({
   windowMs:        15 * 60 * 1000,
@@ -371,11 +387,11 @@ app.get('/', (req, res) => {
     message:  'NexaSpark API — Certificação Digital Enterprise',
     version:  process.env.npm_package_version || '1.0.0',
     endpoints: {
-      health:           'GET  /api/health',
-      auth:             'POST /api/auth/login | /api/auth/register',
-      authGoogle:       'GET  /api/auth/google',
-      authGoogleCb:     'GET  /api/auth/google/callback',
-      certificates:     'GET|POST /api/certificates',
+      health:       'GET  /api/health',
+      auth:         'POST /api/auth/login | /api/auth/register',
+      authGoogle:   'GET  /api/auth/google',
+      authGoogleCb: 'GET  /api/auth/google/callback',
+      certificates: 'GET|POST /api/certificates',
     },
   });
 });
@@ -388,11 +404,6 @@ logger.info('APP', 'Registrando rotas...');
 
 app.use('/api/auth',         authRoutes);
 app.use('/api/certificates', certificateRoutes);
-
-// ⚠️  CORREÇÃO: adminRoutes estava importado no topo mas
-//     nunca registrado com app.use(). Corrigido aqui.
-//     Rotas admin ficam sob /api/admin — proteja com middleware
-//     de role admin no adminRoutes.js.
 app.use('/api/admin',        adminRoutes);
 
 logger.success('APP', 'Rotas registradas', {
@@ -402,7 +413,7 @@ logger.success('APP', 'Rotas registradas', {
 });
 
 // ============================================================
-// 🔍 404 — Rota não encontrada
+// 🔍 404
 // ============================================================
 app.use((req, res) => {
   logger.warn('404', `Rota não encontrada → ${req.method} ${req.originalUrl}`, { ip: req.ip });
@@ -417,10 +428,6 @@ app.use((req, res) => {
 
 // ============================================================
 // 💥 GLOBAL ERROR HANDLER
-//
-// ⚠️  Stack trace exposto apenas em development.
-//     requestId e timestamp para correlação de logs.
-//     Erros CORS tratados separadamente com mensagem clara.
 // ============================================================
 // eslint-disable-next-line no-unused-vars
 app.use((err, req, res, next) => {
@@ -464,8 +471,6 @@ async function startServer() {
     logger.perf('DB connection test', Date.now() - t0);
     logger.success('DB', 'PostgreSQL conectado ✅');
   } catch (error) {
-    // ⚠️  Não abortamos o start — Railway pode reconectar.
-    //     health check monitorará o DB continuamente.
     logger.error('DB', 'Falha na conexão inicial', { message: error.message });
     logger.warn('DB', 'Servidor iniciará mesmo assim — health check monitorará o DB');
   }
@@ -479,8 +484,6 @@ async function startServer() {
     logger.sep();
   });
 
-  // ── Graceful shutdown ──────────────────────────────────────
-  // Timeout de 10s para fechar conexões ativas antes de encerrar.
   function gracefulShutdown(signal) {
     logger.warn('APP', `${signal} recebido — iniciando graceful shutdown`);
     server.close(() => {
@@ -496,7 +499,6 @@ async function startServer() {
   process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
   process.on('SIGINT',  () => gracefulShutdown('SIGINT'));
 
-  // ── Erros não tratados ─────────────────────────────────────
   process.on('unhandledRejection', (reason, promise) => {
     logger.error('PROCESS', 'unhandledRejection detectado!', {
       reason:  String(reason),
@@ -513,4 +515,20 @@ async function startServer() {
   });
 }
 
-startServer();
+// ============================================================
+// ⚠️  EXPORTAÇÃO SEPARADA DO START
+//
+// app é exportado SEM chamar startServer().
+// Isso permite que o Supertest importe o app nos testes
+// sem subir o servidor HTTP na porta 8080.
+//
+// startServer() só é chamado quando o arquivo é executado
+// diretamente (node app.js ou npm start/dev).
+//
+// Padrão: require.main === module detecta execução direta.
+// ============================================================
+if (require.main === module) {
+  startServer();
+}
+
+module.exports = app;
