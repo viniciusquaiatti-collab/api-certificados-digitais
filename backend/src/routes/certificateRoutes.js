@@ -27,6 +27,7 @@ const { ipKeyGenerator }    = require('express-rate-limit');
 const CertificateController = require('../controllers/certificateController');
 const authMiddleware        = require('../middlewares/authMiddleware');
 const validateSchema        = require('../middlewares/validateSchema');
+const planLimitMiddleware   = require('../middlewares/planLimitMiddleware'); // v2.0 NOVO 
 const { certificateSchema, verifySchema, getByIdSchema } = require('../schemas');
 
 // ============================================================

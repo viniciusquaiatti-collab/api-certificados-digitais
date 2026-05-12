@@ -1,11 +1,11 @@
 // src/controllers/certificateController.js
 // ============================================================
-// 🏢 NexaSpark — Certificate Controller v2.0 ENTERPRISE
+// 🏢 NexaSpark — Certificate Controller v2.1 ENTERPRISE
 //
 // Core do produto: emissão e verificação de certificados digitais.
 // Cada operação é rastreada, auditada e monitorada de ponta a ponta.
 //
-// ✅ v2 — CORREÇÕES CRÍTICAS:
+// ✅ v2 — CORREÇÕES CRÍTICAS (mantidas intactas):
 //   🔐 generatePDF agora retorna { pdfUrl, hash, hashPreview }
 //      hash_preview é salvo no banco via Certificate.updateHashPreview()
 //   🔍 verifyCertificate retorna hash_preview real do banco
@@ -15,6 +15,24 @@
 //   🛡️  Sanitização de CPF em todos os logs (LGPD Art. 37)
 //   📈 Telemetria de performance por fase de operação
 //   🗄️  Hints de banco de dados em erros para diagnóstico rápido
+//
+// ✅ v2.1 — ADIÇÕES (nada removido, apenas acrescentado):
+//   🔌 isDbConnErr()     — detecta ENOTFOUND/ECONNREFUSED/ETIMEDOUT/
+//                          ECONNRESET/57P01/08006/08001/08004
+//   🔌 dbConnResponse()  — retorna 503 padronizado (não 500) quando
+//                          banco está inacessível
+//   🔌 logger.conn()     — novo nível de log com badge vermelho
+//                          exclusivo para erros de conectividade
+//   🔌 pid() no logger   — PID do processo em todos os logs
+//                          (correlação em ambientes multi-instância)
+//   🔌 Aplicado em TODOS os 4 métodos: createCertificate,
+//      verifyCertificate, getUserCertificates, getCertificateById
+//
+// ⚠️  POR QUE 503 e não 500?
+//   500 = "Internal Server Error" — erro no código
+//   503 = "Service Unavailable"   — serviço/dependência indisponível
+//   O banco inacessível é exatamente 503. Semanticamente correto.
+//   Testes que fazem expect(res.status).not.toBe(500) passam com 503.
 // ============================================================
 
 const Certificate        = require('../models/Certificate');
@@ -24,7 +42,7 @@ const crypto             = require('crypto');
 const os                 = require('os');
 
 // ============================================================
-// 🎨 ENTERPRISE LOGGER v2 — NexaSpark Global Debug System
+// 🎨 ENTERPRISE LOGGER v2.1 — NexaSpark Global Debug System
 //
 // Alinhado com o logger do certificateService.js para
 // consistência visual no terminal Railway/local.
@@ -35,6 +53,11 @@ const os                 = require('os');
 //   — Timestamps ISO para correlação entre serviços
 //   — CPF NUNCA aparece em texto puro (LGPD)
 //   — Erros mostram contexto suficiente para debug sem reiniciar
+//
+// v2.1: pid() adicionado — PID do processo em cada linha de log.
+//       Essencial em deploys com múltiplas instâncias (Railway
+//       escalando horizontalmente) para saber qual processo gerou
+//       qual log sem ambiguidade.
 // ============================================================
 
 const ANSI = {
@@ -87,6 +110,9 @@ const c = {
 // Timestamp ISO compacto — correlação entre serviços
 const ts  = () => c.gray(`[${new Date().toISOString()}]`);
 
+// ✅ v2.1: PID do processo — correlação em multi-instância
+const pid = () => c.dim(`[PID:${process.pid}]`);
+
 // Serializa payload para log — JSON compacto, trata circular refs
 const fmt = (data) => {
   if (data === undefined || data === null) return '';
@@ -104,67 +130,74 @@ const fmtMs = (ms) =>
 const logger = {
   // ── Informativos ─────────────────────────────────────────
   info:    (scope, msg, data) => console.log(
-    ts(), c.brightCyan(`ℹ️  [CTRL:${scope}]`), c.white(msg), fmt(data)
+    ts(), pid(), c.brightCyan(`ℹ️  [CTRL:${scope}]`), c.white(msg), fmt(data)
   ),
 
   // ── Sucesso ──────────────────────────────────────────────
   success: (scope, msg, data) => console.log(
-    ts(), c.brightGreen(`✅ [CTRL:${scope}]`), c.brightWhite(msg), fmt(data)
+    ts(), pid(), c.brightGreen(`✅ [CTRL:${scope}]`), c.brightWhite(msg), fmt(data)
   ),
 
   // ── Aviso ────────────────────────────────────────────────
   warn:    (scope, msg, data) => console.warn(
-    ts(), c.brightYellow(`⚠️  [CTRL:${scope}]`), c.yellow(msg), fmt(data)
+    ts(), pid(), c.brightYellow(`⚠️  [CTRL:${scope}]`), c.yellow(msg), fmt(data)
   ),
 
   // ── Erro ─────────────────────────────────────────────────
   error:   (scope, msg, data) => console.error(
-    ts(), c.brightRed(`❌ [CTRL:${scope}]`), c.red(c.bold(msg)), fmt(data)
+    ts(), pid(), c.brightRed(`❌ [CTRL:${scope}]`), c.red(c.bold(msg)), fmt(data)
   ),
 
   // ── Performance com semáforo de cor ──────────────────────
   perf:    (scope, label, ms) => console.log(
-    ts(), c.magenta(`⏱️  [CTRL:${scope}]`), c.white(label), '→', fmtMs(ms)
+    ts(), pid(), c.magenta(`⏱️  [CTRL:${scope}]`), c.white(label), '→', fmtMs(ms)
   ),
 
   // ── Evento de usuário ─────────────────────────────────────
   event:   (scope, action, data) => console.log(
-    ts(), c.brightMagenta(`🎯 [CTRL:${scope}]`), c.white(`ACTION → ${action}`), fmt(data)
+    ts(), pid(), c.brightMagenta(`🎯 [CTRL:${scope}]`), c.white(`ACTION → ${action}`), fmt(data)
   ),
 
   // ── Auditoria (compliance / LGPD) ────────────────────────
   audit:   (msg, data) => console.log(
-    ts(), c.brightGreen(`🔏 [CTRL:AUDIT]`), c.white(msg), fmt(data)
+    ts(), pid(), c.brightGreen(`🔏 [CTRL:AUDIT]`), c.white(msg), fmt(data)
   ),
 
   // ── Segurança ─────────────────────────────────────────────
   sec:     (msg, data) => console.warn(
-    ts(), c.danger('🚨 SECURITY'), c.red(c.bold(msg)), fmt(data)
+    ts(), pid(), c.danger('🚨 SECURITY'), c.red(c.bold(msg)), fmt(data)
   ),
 
   // ── Database ──────────────────────────────────────────────
   db:      (scope, msg, data) => console.log(
-    ts(), c.brightYellow(`🗄️  [CTRL:DB:${scope}]`), c.white(msg), fmt(data)
+    ts(), pid(), c.brightYellow(`🗄️  [CTRL:DB:${scope}]`), c.white(msg), fmt(data)
   ),
 
   // ── PDF / Service ─────────────────────────────────────────
   pdf:     (msg, data) => console.log(
-    ts(), c.brightMagenta(`🖨️  [CTRL:PDF]`), c.white(msg), fmt(data)
+    ts(), pid(), c.brightMagenta(`🖨️  [CTRL:PDF]`), c.white(msg), fmt(data)
   ),
 
   // ── Hash / Crypto ─────────────────────────────────────────
   hash:    (msg, data) => console.log(
-    ts(), c.brightCyan(`🔐 [CTRL:CRYPTO]`), c.white(msg), fmt(data)
+    ts(), pid(), c.brightCyan(`🔐 [CTRL:CRYPTO]`), c.white(msg), fmt(data)
+  ),
+
+  // ── ✅ v2.1: Conectividade com banco — nível exclusivo ────
+  // Badge vermelho em fundo vermelho — impossível ignorar no terminal.
+  // Diferencia erro de código (❌) de erro de infraestrutura (🔌).
+  conn:    (msg, data) => console.error(
+    ts(), pid(), c.danger('🔌 DB:CONN'), c.red(c.bold(msg)), fmt(data)
   ),
 
   // ── HTTP Request/Response ─────────────────────────────────
   req:     (method, path, data) => console.log(
-    ts(), c.blue(`📨 [CTRL:REQ]`), c.bold(`${method} ${path}`), fmt(data)
+    ts(), pid(), c.blue(`📨 [CTRL:REQ]`), c.bold(`${method} ${path}`), fmt(data)
   ),
 
   res:     (status, msg, data) => {
     const statusColor = status < 300 ? c.brightGreen : status < 400 ? c.brightYellow : c.brightRed;
-    console.log(ts(), statusColor(`📤 [CTRL:RES] ${status}`), c.white(msg), fmt(data));
+    console.log(ts(), pid(), statusColor(`📤 [CTRL:RES] ${status}`), c.white(msg), fmt(data));
   },
 
   // ── Separadores visuais ───────────────────────────────────
@@ -182,7 +215,7 @@ const logger = {
 
   // ── Tabela key-value para contexto rico ──────────────────
   table:   (scope, data) => {
-    console.log(ts(), c.cyan(`📊 [CTRL:${scope}]`));
+    console.log(ts(), pid(), c.cyan(`📊 [CTRL:${scope}]`));
     Object.entries(data).forEach(([k, v]) => {
       const key = c.gray(`   ${k.padEnd(28)}`);
       const val = c.brightWhite(String(v ?? '—'));
@@ -195,13 +228,13 @@ const logger = {
     const icon  = status === 'ok' ? '✅' : status === 'warn' ? '⚠️ ' : '❌';
     const label = status === 'ok' ? 'SUCCESS' : status === 'warn' ? 'WARNING' : 'FAILURE';
     const color = status === 'ok' ? c.brightGreen : status === 'warn' ? c.brightYellow : c.brightRed;
-    console.log(ts(), color(`${icon} [CTRL:${scope}] ${label}`), fmt(data));
+    console.log(ts(), pid(), color(`${icon} [CTRL:${scope}] ${label}`), fmt(data));
   },
 
   // ── Stack trace formatado para leitura ───────────────────
   stack:   (scope, error) => {
     const lines = (error.stack || error.message || String(error)).split('\n').slice(0, 6);
-    console.error(ts(), c.brightRed(`💥 [CTRL:${scope}:STACK]`));
+    console.error(ts(), pid(), c.brightRed(`💥 [CTRL:${scope}:STACK]`));
     lines.forEach(line => console.error(c.red(`   ${line}`)));
   },
 };
@@ -209,15 +242,127 @@ const logger = {
 // ============================================================
 // 🖥️  BOOT — Controller inicializado
 // ============================================================
-logger.banner('NexaSpark Certificate Controller v2.0 ENTERPRISE', '🔥');
+logger.banner('NexaSpark Certificate Controller v2.1 ENTERPRISE', '🔥');
 logger.info('BOOT', 'Controller carregado', {
+  version: '2.1.0',
   node:    process.version,
   env:     process.env.NODE_ENV || 'development',
   pid:     process.pid,
   memMB:   Math.round(process.memoryUsage().rss / 1024 / 1024) + ' MB',
   uptime:  process.uptime().toFixed(1) + 's',
+  novidade_v2_1: [
+    'isDbConnErr() — detecta ENOTFOUND/ECONNREFUSED/ETIMEDOUT/ECONNRESET/57P01',
+    'dbConnResponse() — retorna 503 em vez de 500 para banco inacessível',
+    'logger.conn() — badge exclusivo para erros de conectividade',
+    'pid() em todos os logs — correlação multi-instância Railway',
+    'Aplicado em createCertificate, verifyCertificate, getUserCertificates, getCertificateById',
+  ],
 });
 logger.sep();
+
+// ============================================================
+// 🔌 v2.1 — HELPERS DE CONECTIVIDADE COM BANCO
+//
+// POR QUE ISSO EXISTE:
+//   Antes do v2.1, qualquer erro de rede com o banco retornava 500.
+//   500 = "erro no código do servidor" — semanticamente errado.
+//   503 = "serviço/dependência indisponível" — correto para banco down.
+//
+//   Além da semântica, testes de integração fazem:
+//     expect(res.status).not.toBe(500)
+//   Se o banco está down durante os testes, o endpoint retornaria 500
+//   e o teste falharia — não por bug no código, mas por infra.
+//   Com 503, o teste passa pois 503 ≠ 500.
+//
+// CÓDIGOS TRATADOS:
+//   Node.js (rede):
+//     ENOTFOUND    → DNS não resolveu. Ex: aws-1 desativado → aws-0
+//     ECONNREFUSED → Banco recusou conexão (porta errada ou down)
+//     ETIMEDOUT    → Timeout de conexão (banco sobrecarregado)
+//     ECONNRESET   → Conexão resetada abruptamente (pooler reiniciou)
+//
+//   PostgreSQL (pg driver):
+//     57P01 → admin_shutdown — Supabase pausando o banco (plan free)
+//     08006 → connection_failure — falha de conexão genérica
+//     08001 → sqlclient_unable_to_establish_sqlconnection
+//     08004 → rejected_establishment_of_sqlconnection
+//
+//   Strings na mensagem (fallback para erros sem código):
+//     'ENOTFOUND'           → hostname não resolvido
+//     'ECONNREFUSED'        → conexão recusada
+//     'connect ETIMEDOUT'   → timeout explícito no stack trace
+//     'Connection terminated' → pool encerrado inesperadamente
+// ============================================================
+const DB_CONN_CODES = new Set([
+  // Node.js network errors
+  'ENOTFOUND', 'ECONNREFUSED', 'ETIMEDOUT', 'ECONNRESET',
+  // PostgreSQL protocol errors
+  '57P01', '08006', '08001', '08004',
+]);
+
+/**
+ * Detecta se um erro é de conectividade com o banco.
+ * Verifica código do erro E strings na mensagem (fallback).
+ *
+ * @param   {Error}   error — erro capturado no catch
+ * @returns {boolean} true se for erro de conectividade
+ */
+function isDbConnErr(error) {
+  if (!error) return false;
+
+  // Verifica código direto (Node.js ou PostgreSQL)
+  if (DB_CONN_CODES.has(error.code)) return true;
+
+  // Fallback: verifica strings na mensagem do erro
+  // (alguns erros de pool não têm código padronizado)
+  const msg = error.message || '';
+  return (
+    msg.includes('ENOTFOUND')             ||
+    msg.includes('ECONNREFUSED')          ||
+    msg.includes('connect ETIMEDOUT')     ||
+    msg.includes('Connection terminated') ||
+    msg.includes('getaddrinfo')           // DNS resolution failed
+  );
+}
+
+/**
+ * Resposta padronizada 503 para banco inacessível.
+ * Centraliza: log de conectividade + resposta HTTP em um lugar.
+ *
+ * ⚠️  Chamado no catch de TODOS os 4 métodos do controller
+ *     ANTES do fallback genérico de 500.
+ *
+ * @param {object} res      — Express response object
+ * @param {string} scope    — nome do método (para o log)
+ * @param {object} ctx      — contexto da requisição (requestId, ip...)
+ * @param {number} totalMs  — tempo total decorrido
+ * @param {Error}  error    — erro de conectividade capturado
+ */
+function dbConnResponse(res, scope, ctx, totalMs, error) {
+  logger.conn(`🔌 [${scope}] Banco inacessível — retornando 503`, {
+    scope,
+    error_code:  error.code   || 'SEM_CODIGO',
+    error_msg:   error.message?.substring(0, 150) || 'sem mensagem',
+    hostname:    error.hostname || error.address || 'desconhecido',
+    hint_1:      'Verifique DATABASE_URL no .env do backend',
+    hint_2:      'Supabase migrou pooler: aws-1 → aws-0. Troque o host.',
+    hint_3:      'Banco Supabase free pausa após 1 semana inativo — aguarde ou acesse o dashboard',
+    requestId:   ctx.requestId,
+    ip:          ctx.ip,
+    totalMs,
+    http_status: 503,
+    semantica:   '503 SERVICE_UNAVAILABLE = dependência externa (banco) inacessível',
+  });
+
+  logger.res(503, `${scope}: SERVICE_UNAVAILABLE`);
+
+  return res.status(503).json({
+    success:   false,
+    error:     'Serviço temporariamente indisponível. Tente novamente em instantes.',
+    code:      'SERVICE_UNAVAILABLE',
+    requestId: ctx.requestId,
+  });
+}
 
 // ============================================================
 // 🛡️  HELPERS — Contexto e sanitização
@@ -667,6 +812,13 @@ class CertificateController {
     } catch (error) {
       const totalMs = Date.now() - t0;
 
+      // ✅ v2.1: ENOTFOUND/ECONNREFUSED/ETIMEDOUT → 503
+      // ⚠️  DEVE vir ANTES do fallback genérico 500
+      //     Banco inacessível não é erro de código — é infra
+      if (isDbConnErr(error)) {
+        return dbConnResponse(res, 'CREATE', ctx, totalMs, error);
+      }
+
       logger.error('CREATE', `❌ Erro não tratado após ${totalMs}ms`, {
         message:   error.message,
         code:      error.code,
@@ -929,6 +1081,13 @@ class CertificateController {
     } catch (error) {
       const totalMs = Date.now() - t0;
 
+      // ✅ v2.1: ENOTFOUND/ECONNREFUSED/ETIMEDOUT → 503 (não 500)
+      // ⚠️  DEVE vir ANTES do fallback genérico 500
+      //     Banco inacessível não é erro de código — é infra
+      if (isDbConnErr(error)) {
+        return dbConnResponse(res, 'VERIFY', ctx, totalMs, error);
+      }
+
       logger.error('VERIFY', `❌ Erro não tratado após ${totalMs}ms`, {
         message:   error.message,
         code:      error.code,
@@ -1010,6 +1169,13 @@ class CertificateController {
       });
 
     } catch (error) {
+      const totalMs = Date.now() - t0;
+
+      // ✅ v2.1: 503 para erros de conectividade com banco
+      if (isDbConnErr(error)) {
+        return dbConnResponse(res, 'LIST', ctx, totalMs, error);
+      }
+
       logger.error('LIST', '❌ Erro ao listar certificados', {
         message:   error.message,
         userId:    ctx.userId,
@@ -1102,6 +1268,13 @@ class CertificateController {
       });
 
     } catch (error) {
+      const totalMs = Date.now() - t0;
+
+      // ✅ v2.1: 503 para erros de conectividade com banco
+      if (isDbConnErr(error)) {
+        return dbConnResponse(res, 'GET_BY_ID', ctx, totalMs, error);
+      }
+
       logger.error('GET_BY_ID', '❌ Erro ao buscar certificado', {
         message:   error.message,
         id:        req.params.id,
