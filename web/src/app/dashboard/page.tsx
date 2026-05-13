@@ -1,7 +1,7 @@
 "use client";
 
 // ============================================================
-// 🏢 NexaSpark — /dashboard/page.tsx v3.0 LUXURY ENTERPRISE
+// 🏢 NexaSpark — /dashboard/page.tsx v3.1 LUXURY ENTERPRISE
 //
 // UPGRADE v3 — SaaS que respira:
 //   ✅ Canvas de partículas flutuantes no fundo (vive sozinho)
@@ -16,15 +16,29 @@
 //   ✅ Shimmer effect nos cards enquanto carrega
 //   ✅ Todos os console.log preservados + novos
 //   ✅ Session timeout 6min com aviso visual
+//
+// ✅ v3.1 — ADIÇÕES (zero remoção, apenas acréscimo):
+//   🔐 CompleteProfileModal integrado
+//      — Aparece automaticamente para usuários Google sem CPF
+//      — Modal obrigatório: cpf_cadastrado === false
+//      — Detectado em validateAuth() após setUser(userData)
+//      — Fecha após sucesso, atualiza token, libera dashboard
+//   🔐 Interface User expandida: + cpf_cadastrado?: boolean
+//   🔐 Estado showCpfModal adicionado
+//   🔐 logger.modal() — novo scope de log para o modal
+//   🔐 Log detalhado do fluxo de detecção de CPF pendente
 // ============================================================
 
 import { useEffect, useState, useRef, useCallback } from "react";
-import { useRouter } from "next/navigation";
+import { useRouter }                                 from "next/navigation";
+
+// ✅ v3.1: import do modal obrigatório para usuários Google
+import CompleteProfileModal from "./CompleteProfileModal";
 
 // ============================================================
-// 🏢 LOGGER — Enterprise Grade | NexaSpark Frontend v3
+// 🏢 LOGGER — Enterprise Grade | NexaSpark Frontend v3.1
 // ============================================================
-const LOG_PREFIX = "[NexaSpark:Dashboard:v3]";
+const LOG_PREFIX = "[NexaSpark:Dashboard:v3.1]";
 
 const logger = {
   info:    (scope: string, msg: string, data?: any) =>
@@ -66,22 +80,29 @@ const logger = {
     console.log(`%c${LOG_PREFIX} 🖼️  [CANVAS]%c ${msg}`, "color:#93c5fd;font-weight:bold;", "color:inherit;", data ?? ""),
   clock:   (msg: string, data?: any) =>
     console.log(`%c${LOG_PREFIX} 🕐 [CLOCK]%c ${msg}`, "color:#6ee7b7;font-weight:bold;", "color:inherit;", data ?? ""),
+  // ✅ v3.1: novo scope para o modal de CPF
+  modal:   (msg: string, data?: any) =>
+    console.log(`%c${LOG_PREFIX} 🪟 [MODAL:CPF]%c ${msg}`, "color:#fb923c;font-weight:bold;", "color:inherit;", data ?? ""),
 };
 
-const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8080";
+const API_URL            = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8080";
 const SESSION_TIMEOUT_MS = 6 * 60 * 1000;
-const PLAN_LIMIT = 5;
+const PLAN_LIMIT         = 5;
 
 // ============================================================
 // 📋 TIPOS
 // ============================================================
 interface User {
-  id:             number;
-  email:          string;
-  nome?:          string;
-  avatar?:        string;
-  auth_provider?: string;
-  criado_em?:     string;
+  id:              number;
+  email:           string;
+  nome?:           string;
+  avatar?:         string;
+  auth_provider?:  string;
+  // ✅ v3.1: cpf_cadastrado — controla exibição do modal
+  // false = usuário Google sem CPF → modal aparece
+  // true  = CPF já vinculado → dashboard liberado normalmente
+  cpf_cadastrado?: boolean;
+  criado_em?:      string;
 }
 
 interface Certificate {
@@ -117,7 +138,7 @@ function useCountUp(target: number, duration = 1200, start = false) {
     const step = (timestamp: number) => {
       if (!startTime) startTime = timestamp;
       const progress = Math.min((timestamp - startTime) / duration, 1);
-      const eased = 1 - Math.pow(1 - progress, 3); // ease-out cubic
+      const eased    = 1 - Math.pow(1 - progress, 3); // ease-out cubic
       setValue(Math.floor(eased * target));
       if (progress < 1) requestAnimationFrame(step);
       else setValue(target);
@@ -176,14 +197,14 @@ function ParticleCanvas() {
       ctx!.clearRect(0, 0, W, H);
 
       particles.forEach((p, i) => {
-        p.x += p.vx;
-        p.y += p.vy;
+        p.x    += p.vx;
+        p.y    += p.vy;
         p.pulse += p.speed;
 
         // wrap around
-        if (p.x < -5) p.x = W + 5;
+        if (p.x < -5)    p.x = W + 5;
         if (p.x > W + 5) p.x = -5;
-        if (p.y < -5) p.y = H + 5;
+        if (p.y < -5)    p.y = H + 5;
         if (p.y > H + 5) p.y = -5;
 
         const a = p.alpha * (0.6 + 0.4 * Math.sin(p.pulse));
@@ -195,15 +216,15 @@ function ParticleCanvas() {
 
         // linhas entre partículas próximas
         for (let j = i + 1; j < particles.length; j++) {
-          const q = particles[j];
-          const dx = p.x - q.x, dy = p.y - q.y;
+          const q    = particles[j];
+          const dx   = p.x - q.x, dy = p.y - q.y;
           const dist = Math.sqrt(dx * dx + dy * dy);
           if (dist < 120) {
             ctx!.beginPath();
             ctx!.moveTo(p.x, p.y);
             ctx!.lineTo(q.x, q.y);
             ctx!.strokeStyle = `rgba(16,185,129,${0.06 * (1 - dist / 120)})`;
-            ctx!.lineWidth = 0.5;
+            ctx!.lineWidth   = 0.5;
             ctx!.stroke();
           }
         }
@@ -248,7 +269,7 @@ function useClock() {
 }
 
 // ============================================================
-// 🏠 DASHBOARD ENTERPRISE v3
+// 🏠 DASHBOARD ENTERPRISE v3.1
 // ============================================================
 export default function Dashboard() {
   const router = useRouter();
@@ -267,6 +288,11 @@ export default function Dashboard() {
   const [timeoutWarning,   setTimeoutWarning]    = useState(false);
   const [mounted,          setMounted]           = useState(false);
   const [countStart,       setCountStart]        = useState(false);
+
+  // ✅ v3.1: estado do modal de CPF obrigatório para usuários Google
+  // true  = modal visível, bloqueia interação com o dashboard
+  // false = modal oculto, dashboard totalmente acessível
+  const [showCpfModal,     setShowCpfModal]      = useState(false);
 
   const mountTime  = useRef(Date.now());
   const timeoutRef = useRef<NodeJS.Timeout | null>(null);
@@ -324,7 +350,7 @@ export default function Dashboard() {
 
   useEffect(() => {
     if (!user) return;
-    const events = ["click", "keypress", "mousemove", "touchstart", "scroll"];
+    const events  = ["click", "keypress", "mousemove", "touchstart", "scroll"];
     const handler = () => resetActivityTimer();
     events.forEach(e => document.addEventListener(e, handler, { passive: true }));
     resetActivityTimer();
@@ -341,9 +367,12 @@ export default function Dashboard() {
   // ============================================================
   useEffect(() => {
     logger.sep();
-    logger.mount("Dashboard v3 Luxury Enterprise");
-    logger.info("INIT", "Dashboard v3 inicializando", {
-      apiUrl: API_URL, timestamp: new Date().toISOString(), version: "3.0.0",
+    logger.mount("Dashboard v3.1 Luxury Enterprise");
+    logger.info("INIT", "Dashboard v3.1 inicializando", {
+      apiUrl:    API_URL,
+      timestamp: new Date().toISOString(),
+      version:   "3.1.0",
+      novidade:  "CompleteProfileModal para usuários Google sem CPF",
     });
 
     async function validateAuth() {
@@ -359,13 +388,16 @@ export default function Dashboard() {
         }
 
         try {
-          const payload = JSON.parse(atob(token.split(".")[1]));
+          const payload   = JSON.parse(atob(token.split(".")[1]));
           const isExpired = Date.now() > payload.exp * 1000;
           logger.auth("Token decodificado", {
-            userId: payload.id, email: payload.email,
-            provider: payload.auth_provider || "local",
-            expiresAt: new Date(payload.exp * 1000).toISOString(),
-            isExpired, tokenSize: token.length,
+            userId:         payload.id,
+            email:          payload.email,
+            provider:       payload.auth_provider || "local",
+            expiresAt:      new Date(payload.exp * 1000).toISOString(),
+            cpf_cadastrado: payload.cpf_cadastrado,
+            isExpired,
+            tokenSize:      token.length,
           });
           if (isExpired) {
             logger.warn("AUTH", "Token expirado localmente — limpando");
@@ -379,9 +411,12 @@ export default function Dashboard() {
         }
 
         logger.info("AUTH:HTTP", "Chamando /api/auth/me...", { url: `${API_URL}/api/auth/me` });
-        const tFetch = performance.now();
+        const tFetch   = performance.now();
         const response = await fetch(`${API_URL}/api/auth/me`, {
-          headers: { "Authorization": `Bearer ${token}`, "X-Request-ID": `dashboard_v3_${Date.now()}` },
+          headers: {
+            "Authorization": `Bearer ${token}`,
+            "X-Request-ID":  `dashboard_v3_${Date.now()}`,
+          },
         });
         logger.perf("AUTH:HTTP", "/api/auth/me", performance.now() - tFetch);
         logger.info("AUTH:HTTP", "Resposta", { status: response.status, ok: response.ok });
@@ -390,7 +425,8 @@ export default function Dashboard() {
         try {
           data = await response.json();
           logger.info("AUTH:PARSE", "Body parseado", {
-            success: data.success, hasUser: !!data.data,
+            success:    data.success,
+            hasUser:    !!data.data,
             userFields: data.data ? Object.keys(data.data) : [],
           });
         } catch (parseErr) {
@@ -407,6 +443,29 @@ export default function Dashboard() {
         logger.success("AUTH", "Sessão validada ✅", { userId: userData.id, email: userData.email });
         logger.perf("AUTH", "Validação completa", performance.now() - t0);
         setUser(userData);
+
+        // ✅ v3.1: Detecta usuário Google sem CPF cadastrado
+        // Condições para abrir o modal:
+        //   1. auth_provider é "google" (veio pelo OAuth)
+        //   2. cpf_cadastrado é false ou undefined (nunca preencheu)
+        // O modal é obrigatório — não tem como fechar sem preencher
+        if (userData.auth_provider === "google" && !userData.cpf_cadastrado) {
+          logger.modal("🚨 Usuário Google sem CPF detectado — abrindo modal obrigatório", {
+            userId:          userData.id,
+            email:           userData.email,
+            auth_provider:   userData.auth_provider,
+            cpf_cadastrado:  userData.cpf_cadastrado,
+            acao:            "Modal obrigatório será exibido — usuário não pode fechar sem preencher",
+            endpoint_alvo:   "POST /api/auth/complete-profile",
+          });
+          setShowCpfModal(true);
+        } else {
+          logger.auth("✅ CPF verificado — dashboard liberado normalmente", {
+            userId:         userData.id,
+            provider:       userData.auth_provider,
+            cpf_cadastrado: userData.cpf_cadastrado,
+          });
+        }
 
       } catch (error: any) {
         logger.error("AUTH", `Validação falhou — ${error.message}`, { type: error.name });
@@ -426,7 +485,7 @@ export default function Dashboard() {
     validateAuth();
 
     return () => {
-      logger.unmount("Dashboard v3 Luxury Enterprise");
+      logger.unmount("Dashboard v3.1 Luxury Enterprise");
       logger.perf("DASHBOARD:LIFECYCLE", "Tempo total montado", Date.now() - mountTime.current);
       logger.sep();
     };
@@ -452,7 +511,7 @@ export default function Dashboard() {
       const response = await fetch(`${API_URL}/api/certificates`, {
         headers: {
           "Authorization": `Bearer ${token}`,
-          "X-Request-ID": `hist_${Date.now()}`,
+          "X-Request-ID":  `hist_${Date.now()}`,
         },
       });
 
@@ -464,9 +523,9 @@ export default function Dashboard() {
       try {
         data = await response.json();
         logger.table("HIST:PARSE", "Body parseado", {
-          success: data.success,
-          keys: Object.keys(data),
-          dataType: Array.isArray(data.data) ? "array" : typeof data.data,
+          success:    data.success,
+          keys:       Object.keys(data),
+          dataType:   Array.isArray(data.data) ? "array" : typeof data.data,
           dataLength: Array.isArray(data.data) ? data.data.length : "N/A",
         });
       } catch (parseErr) {
@@ -491,7 +550,7 @@ export default function Dashboard() {
         Array.isArray(data)                    ? data                    : [];
 
       logger.table("HIST", "Certificados carregados ✅", {
-        count: certs.length,
+        count:  certs.length,
         format: Array.isArray(data.data?.certificates) ? "data.certificates" :
                 Array.isArray(data.data)               ? "data.data[]"       :
                 Array.isArray(data)                    ? "root[]"            : "vazio",
@@ -511,8 +570,8 @@ export default function Dashboard() {
     } catch (error: any) {
       logger.error("HIST", "Falha ao carregar histórico", {
         message: error.message,
-        type: error.name,
-        hint: "Verifique se GET /api/certificates retorna { success, data: [] }",
+        type:    error.name,
+        hint:    "Verifique se GET /api/certificates retorna { success, data: [] }",
       });
     } finally {
       setLoadingCerts(false);
@@ -570,10 +629,10 @@ export default function Dashboard() {
     logger.cert("Iniciando emissão...");
     logger.event("CERT", "Formulário submetido", {
       nome_participante: form.nome_participante,
-      cpf: `[${form.cpf.length} chars]`,
-      nome_curso: form.nome_curso,
-      carga_horaria: form.carga_horaria,
-      data_emissao: form.data_emissao,
+      cpf:               `[${form.cpf.length} chars]`,
+      nome_curso:        form.nome_curso,
+      carga_horaria:     form.carga_horaria,
+      data_emissao:      form.data_emissao,
     });
 
     setLoadingSubmit(true);
@@ -585,13 +644,13 @@ export default function Dashboard() {
       logger.cert("Payload preparado", { ...payload, cpf: `[${payload.cpf.length} chars]` });
       logger.info("CERT:HTTP", "POST /api/certificates...", { url: `${API_URL}/api/certificates` });
 
-      const tFetch = performance.now();
+      const tFetch   = performance.now();
       const response = await fetch(`${API_URL}/api/certificates`, {
-        method: "POST",
+        method:  "POST",
         headers: {
-          "Content-Type": "application/json",
+          "Content-Type":  "application/json",
           "Authorization": `Bearer ${token}`,
-          "X-Request-ID": `cert_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+          "X-Request-ID":  `cert_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
         },
         body: JSON.stringify(payload),
       });
@@ -602,9 +661,9 @@ export default function Dashboard() {
       try {
         data = await response.json();
         logger.info("CERT:PARSE", "Body parseado", {
-          success: data.success,
+          success:   data.success,
           hasPdfUrl: !!(data.data?.pdf_url || data.pdf_url),
-          keys: Object.keys(data),
+          keys:      Object.keys(data),
         });
       } catch (parseErr) {
         logger.error("CERT:PARSE", "JSON inválido", { parseErr: String(parseErr) });
@@ -678,15 +737,20 @@ export default function Dashboard() {
   const planUsed = metricsThisMonth;
   const planPct  = Math.min((planUsed / PLAN_LIMIT) * 100, 100);
 
-  logger.info("RENDER", "Renderizando Dashboard v3 Luxury", {
-    userId: user.id, email: user.email, activeTab,
-    certsLoaded: certificates.length, mounted,
+  logger.info("RENDER", "Renderizando Dashboard v3.1 Luxury", {
+    userId:        user.id,
+    email:         user.email,
+    activeTab,
+    certsLoaded:   certificates.length,
+    mounted,
+    showCpfModal,
+    cpf_cadastrado: user.cpf_cadastrado,
   });
 
   // ── Estilos de animação de entrada staggered ─────────────────
   const fadeIn = (delay = 0): React.CSSProperties => ({
-    opacity: mounted ? 1 : 0,
-    transform: mounted ? "translateY(0)" : "translateY(12px)",
+    opacity:    mounted ? 1 : 0,
+    transform:  mounted ? "translateY(0)" : "translateY(12px)",
     transition: `opacity 0.5s ease ${delay}ms, transform 0.5s ease ${delay}ms`,
   });
 
@@ -713,18 +777,42 @@ export default function Dashboard() {
       {/* CANVAS */}
       <ParticleCanvas />
 
+      {/*
+        ✅ v3.1 — CompleteProfileModal
+        Renderizado ANTES do conteúdo principal para garantir z-index correto.
+        Condições de exibição:
+          1. showCpfModal === true (detectado em validateAuth)
+          2. user !== null (sessão validada)
+        O modal tem z-index: 200 e backdrop blur total.
+        onComplete: fecha o modal e loga a conclusão.
+      */}
+      {showCpfModal && user && (
+        <CompleteProfileModal
+          user={user}
+          onComplete={() => {
+            logger.modal("✅ Modal de CPF concluído — dashboard liberado", {
+              userId:         user.id,
+              email:          user.email,
+              cpf_cadastrado: true,
+              acao:           "setShowCpfModal(false) — usuário pode usar o dashboard",
+            });
+            setShowCpfModal(false);
+          }}
+        />
+      )}
+
       <div style={{ minHeight: "100vh", display: "flex", background: "#050810", color: "white", fontFamily: "'Syne', system-ui, sans-serif", position: "relative", zIndex: 1 }}>
 
         {/* TIMEOUT WARNING */}
         {timeoutWarning && (
           <div style={{
-            position: "fixed", top: 20, right: 20, zIndex: 100,
-            background: "rgba(251,191,36,0.06)", border: "1px solid rgba(251,191,36,0.25)",
-            borderRadius: 14, padding: "12px 18px",
-            display: "flex", alignItems: "center", gap: 12,
+            position:       "fixed", top: 20, right: 20, zIndex: 100,
+            background:     "rgba(251,191,36,0.06)", border: "1px solid rgba(251,191,36,0.25)",
+            borderRadius:   14, padding: "12px 18px",
+            display:        "flex", alignItems: "center", gap: 12,
             backdropFilter: "blur(20px)",
-            animation: "fade-slide-up 0.3s ease",
-            boxShadow: "0 0 30px rgba(251,191,36,0.08)",
+            animation:      "fade-slide-up 0.3s ease",
+            boxShadow:      "0 0 30px rgba(251,191,36,0.08)",
           }}>
             <div style={{ width: 8, height: 8, borderRadius: "50%", background: "#fbbf24", animation: "blink 1s ease infinite" }} />
             <div>
@@ -736,26 +824,26 @@ export default function Dashboard() {
 
         {/* SIDEBAR */}
         <aside style={{
-          width: sidebarCollapsed ? 60 : 230,
-          minHeight: "100vh",
-          background: "rgba(10,15,24,0.9)",
-          borderRight: "1px solid rgba(16,185,129,0.08)",
-          display: "flex", flexDirection: "column", flexShrink: 0,
-          transition: "width 0.3s cubic-bezier(0.4,0,0.2,1)",
+          width:          sidebarCollapsed ? 60 : 230,
+          minHeight:      "100vh",
+          background:     "rgba(10,15,24,0.9)",
+          borderRight:    "1px solid rgba(16,185,129,0.08)",
+          display:        "flex", flexDirection: "column", flexShrink: 0,
+          transition:     "width 0.3s cubic-bezier(0.4,0,0.2,1)",
           backdropFilter: "blur(20px)",
-          position: "relative", zIndex: 10,
+          position:       "relative", zIndex: 10,
         }}>
 
           {/* Logo */}
           <div style={{ padding: sidebarCollapsed ? "20px 14px" : "20px 18px", borderBottom: "1px solid rgba(16,185,129,0.06)", display: "flex", alignItems: "center", gap: 12 }}>
             <div style={{
-              width: 32, height: 32, borderRadius: 10,
-              background: "linear-gradient(135deg, rgba(16,185,129,0.2), rgba(16,185,129,0.05))",
-              border: "1px solid rgba(16,185,129,0.3)",
-              display: "flex", alignItems: "center", justifyContent: "center",
-              flexShrink: 0, fontSize: 15,
-              animation: "float 3s ease-in-out infinite",
-              boxShadow: "0 0 20px rgba(16,185,129,0.1)",
+              width:          32, height: 32, borderRadius: 10,
+              background:     "linear-gradient(135deg, rgba(16,185,129,0.2), rgba(16,185,129,0.05))",
+              border:         "1px solid rgba(16,185,129,0.3)",
+              display:        "flex", alignItems: "center", justifyContent: "center",
+              flexShrink:     0, fontSize: 15,
+              animation:      "float 3s ease-in-out infinite",
+              boxShadow:      "0 0 20px rgba(16,185,129,0.1)",
             }}>⚡</div>
             {!sidebarCollapsed && (
               <div>
@@ -771,28 +859,28 @@ export default function Dashboard() {
           {/* Nav */}
           <nav style={{ flex: 1, padding: "16px 8px", display: "flex", flexDirection: "column", gap: 4 }}>
             {([
-              { tab: "emitir",    icon: "✦", label: "Emitir",    desc: "Novo certificado" },
+              { tab: "emitir",    icon: "✦", label: "Emitir",    desc: "Novo certificado"    },
               { tab: "historico", icon: "◈", label: "Histórico", desc: "Emissões anteriores" },
-              { tab: "perfil",    icon: "◉", label: "Perfil",    desc: "Dados da conta" },
-            ] as { tab: ActiveTab; icon: string; label: string; desc: string }[]).map((item, idx) => {
+              { tab: "perfil",    icon: "◉", label: "Perfil",    desc: "Dados da conta"      },
+            ] as { tab: ActiveTab; icon: string; label: string; desc: string }[]).map((item) => {
               const isActive = activeTab === item.tab;
               return (
                 <button
                   key={item.tab}
                   onClick={() => handleTabChange(item.tab)}
                   style={{
-                    width: "100%",
-                    display: "flex", alignItems: "center", gap: 12,
-                    padding: sidebarCollapsed ? "11px 0" : "11px 14px",
+                    width:          "100%",
+                    display:        "flex", alignItems: "center", gap: 12,
+                    padding:        sidebarCollapsed ? "11px 0" : "11px 14px",
                     justifyContent: sidebarCollapsed ? "center" : "flex-start",
-                    borderRadius: 10,
-                    border: isActive ? "1px solid rgba(16,185,129,0.2)" : "1px solid transparent",
-                    background: isActive ? "rgba(16,185,129,0.08)" : "transparent",
-                    color: isActive ? "#34d399" : "rgba(255,255,255,0.3)",
-                    fontSize: 13, fontWeight: isActive ? 600 : 400,
-                    cursor: "pointer", transition: "all 0.2s",
-                    position: "relative",
-                    boxShadow: isActive ? "inset 0 0 20px rgba(16,185,129,0.04)" : "none",
+                    borderRadius:   10,
+                    border:         isActive ? "1px solid rgba(16,185,129,0.2)" : "1px solid transparent",
+                    background:     isActive ? "rgba(16,185,129,0.08)" : "transparent",
+                    color:          isActive ? "#34d399" : "rgba(255,255,255,0.3)",
+                    fontSize:       13, fontWeight: isActive ? 600 : 400,
+                    cursor:         "pointer", transition: "all 0.2s",
+                    position:       "relative",
+                    boxShadow:      isActive ? "inset 0 0 20px rgba(16,185,129,0.04)" : "none",
                   }}
                   onMouseEnter={e => { if (!isActive) { (e.currentTarget as HTMLButtonElement).style.color = "rgba(255,255,255,0.7)"; (e.currentTarget as HTMLButtonElement).style.background = "rgba(255,255,255,0.03)"; }}}
                   onMouseLeave={e => { if (!isActive) { (e.currentTarget as HTMLButtonElement).style.color = "rgba(255,255,255,0.3)"; (e.currentTarget as HTMLButtonElement).style.background = "transparent"; }}}
@@ -821,11 +909,11 @@ export default function Dashboard() {
               </div>
               <div style={{ height: 3, background: "rgba(255,255,255,0.05)", borderRadius: 2, overflow: "hidden" }}>
                 <div style={{
-                  height: "100%", borderRadius: 2,
+                  height:     "100%", borderRadius: 2,
                   background: planPct > 80 ? "#f87171" : "linear-gradient(90deg, #10b981, #34d399)",
-                  width: `${planPct}%`,
+                  width:      `${planPct}%`,
                   transition: "width 1s cubic-bezier(0.4,0,0.2,1)",
-                  boxShadow: planPct > 0 ? "0 0 8px rgba(16,185,129,0.4)" : "none",
+                  boxShadow:  planPct > 0 ? "0 0 8px rgba(16,185,129,0.4)" : "none",
                 }} />
               </div>
             </div>
@@ -835,11 +923,11 @@ export default function Dashboard() {
           <div style={{ padding: "14px 10px" }}>
             <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "0 4px", justifyContent: sidebarCollapsed ? "center" : "flex-start" }}>
               <div style={{
-                width: 32, height: 32, borderRadius: "50%",
+                width:      32, height: 32, borderRadius: "50%",
                 background: "linear-gradient(135deg, rgba(16,185,129,0.2), rgba(16,185,129,0.05))",
-                border: "1px solid rgba(16,185,129,0.25)",
-                display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0,
-                animation: "pulse-glow 4s ease-in-out infinite",
+                border:     "1px solid rgba(16,185,129,0.25)",
+                display:    "flex", alignItems: "center", justifyContent: "center", flexShrink: 0,
+                animation:  "pulse-glow 4s ease-in-out infinite",
               }}>
                 <span style={{ color: "#6ee7b7", fontSize: 11, fontWeight: 700, fontFamily: "monospace" }}>{initials}</span>
               </div>
@@ -917,12 +1005,12 @@ export default function Dashboard() {
                 <div key={i} style={{
                   ...fadeIn(m.delay),
                   borderRadius: 16,
-                  border: `1px solid ${m.border}`,
-                  background: `radial-gradient(ellipse at top left, ${m.glow} 0%, rgba(5,8,16,0) 70%)`,
-                  padding: "22px 24px",
-                  position: "relative", overflow: "hidden",
-                  cursor: "default",
-                  transition: "transform 0.2s, box-shadow 0.2s",
+                  border:       `1px solid ${m.border}`,
+                  background:   `radial-gradient(ellipse at top left, ${m.glow} 0%, rgba(5,8,16,0) 70%)`,
+                  padding:      "22px 24px",
+                  position:     "relative", overflow: "hidden",
+                  cursor:       "default",
+                  transition:   "transform 0.2s, box-shadow 0.2s",
                 }}
                   onMouseEnter={e => { (e.currentTarget as HTMLDivElement).style.transform = "translateY(-2px)"; (e.currentTarget as HTMLDivElement).style.boxShadow = `0 8px 32px ${m.glow}`; }}
                   onMouseLeave={e => { (e.currentTarget as HTMLDivElement).style.transform = "translateY(0)"; (e.currentTarget as HTMLDivElement).style.boxShadow = "none"; }}
@@ -964,22 +1052,22 @@ export default function Dashboard() {
                             onChange={handleChange}
                             required
                             style={{
-                              width: "100%", background: "rgba(10,15,24,0.8)",
-                              border: "1px solid rgba(255,255,255,0.07)",
+                              width:       "100%", background: "rgba(10,15,24,0.8)",
+                              border:      "1px solid rgba(255,255,255,0.07)",
                               borderRadius: 10, padding: "12px 16px",
-                              fontSize: 13, color: "rgba(255,255,255,0.8)",
-                              outline: "none", boxSizing: "border-box",
-                              fontFamily: "'Syne', system-ui, sans-serif",
-                              transition: "border-color 0.2s, box-shadow 0.2s",
+                              fontSize:    13, color: "rgba(255,255,255,0.8)",
+                              outline:     "none", boxSizing: "border-box",
+                              fontFamily:  "'Syne', system-ui, sans-serif",
+                              transition:  "border-color 0.2s, box-shadow 0.2s",
                             }}
                             onFocus={e => {
                               e.currentTarget.style.borderColor = "rgba(16,185,129,0.5)";
-                              e.currentTarget.style.boxShadow = "0 0 0 3px rgba(16,185,129,0.06), inset 0 0 20px rgba(16,185,129,0.02)";
+                              e.currentTarget.style.boxShadow   = "0 0 0 3px rgba(16,185,129,0.06), inset 0 0 20px rgba(16,185,129,0.02)";
                               logger.event("FORM:FOCUS", f.name);
                             }}
                             onBlur={e => {
                               e.currentTarget.style.borderColor = "rgba(255,255,255,0.07)";
-                              e.currentTarget.style.boxShadow = "none";
+                              e.currentTarget.style.boxShadow   = "none";
                             }}
                           />
                         </div>
@@ -992,17 +1080,17 @@ export default function Dashboard() {
                         onChange={handleChange}
                         required
                         style={{
-                          width: "100%", background: "rgba(10,15,24,0.8)",
-                          border: "1px solid rgba(255,255,255,0.07)",
+                          width:       "100%", background: "rgba(10,15,24,0.8)",
+                          border:      "1px solid rgba(255,255,255,0.07)",
                           borderRadius: 10, padding: "12px 16px",
-                          fontSize: 13, color: "rgba(255,255,255,0.5)",
-                          outline: "none", boxSizing: "border-box",
+                          fontSize:    13, color: "rgba(255,255,255,0.5)",
+                          outline:     "none", boxSizing: "border-box",
                           colorScheme: "dark",
-                          fontFamily: "'Syne', system-ui, sans-serif",
-                          transition: "border-color 0.2s, box-shadow 0.2s",
+                          fontFamily:  "'Syne', system-ui, sans-serif",
+                          transition:  "border-color 0.2s, box-shadow 0.2s",
                         }}
                         onFocus={e => { e.currentTarget.style.borderColor = "rgba(16,185,129,0.5)"; e.currentTarget.style.boxShadow = "0 0 0 3px rgba(16,185,129,0.06)"; }}
-                        onBlur={e => { e.currentTarget.style.borderColor = "rgba(255,255,255,0.07)"; e.currentTarget.style.boxShadow = "none"; }}
+                        onBlur={e  => { e.currentTarget.style.borderColor = "rgba(255,255,255,0.07)"; e.currentTarget.style.boxShadow = "none"; }}
                       />
 
                       {submitError && (
@@ -1017,19 +1105,19 @@ export default function Dashboard() {
                         disabled={loadingSubmit}
                         onClick={() => logger.event("CERT", "Botão Emitir clicado")}
                         style={{
-                          width: "100%",
-                          background: loadingSubmit
+                          width:       "100%",
+                          background:  loadingSubmit
                             ? "rgba(16,185,129,0.04)"
                             : "linear-gradient(135deg, rgba(16,185,129,0.15), rgba(16,185,129,0.08))",
-                          border: "1px solid rgba(16,185,129,0.3)",
+                          border:      "1px solid rgba(16,185,129,0.3)",
                           borderRadius: 10, padding: "13px 0",
-                          color: "#34d399", fontSize: 13, fontWeight: 700,
-                          cursor: loadingSubmit ? "not-allowed" : "pointer",
-                          display: "flex", alignItems: "center", justifyContent: "center", gap: 8,
-                          transition: "all 0.2s", opacity: loadingSubmit ? 0.5 : 1,
-                          fontFamily: "'Syne', system-ui, sans-serif",
+                          color:       "#34d399", fontSize: 13, fontWeight: 700,
+                          cursor:      loadingSubmit ? "not-allowed" : "pointer",
+                          display:     "flex", alignItems: "center", justifyContent: "center", gap: 8,
+                          transition:  "all 0.2s", opacity: loadingSubmit ? 0.5 : 1,
+                          fontFamily:  "'Syne', system-ui, sans-serif",
                           letterSpacing: "0.03em",
-                          boxShadow: loadingSubmit ? "none" : "0 0 20px rgba(16,185,129,0.08)",
+                          boxShadow:   loadingSubmit ? "none" : "0 0 20px rgba(16,185,129,0.08)",
                         }}
                         onMouseEnter={e => { if (!loadingSubmit) { (e.currentTarget as HTMLButtonElement).style.boxShadow = "0 0 30px rgba(16,185,129,0.15)"; (e.currentTarget as HTMLButtonElement).style.borderColor = "rgba(16,185,129,0.5)"; }}}
                         onMouseLeave={e => { if (!loadingSubmit) { (e.currentTarget as HTMLButtonElement).style.boxShadow = "0 0 20px rgba(16,185,129,0.08)"; (e.currentTarget as HTMLButtonElement).style.borderColor = "rgba(16,185,129,0.3)"; }}}
@@ -1067,59 +1155,59 @@ export default function Dashboard() {
                 </div>
 
                 {/* HERO IMAGE — lado direito */}
-                {/* ⚠️  Salve a imagem em web/public/hero-dashboard.png
+                {/* ⚠️  Salve a imagem em web/public/images/hero-dashboard.png
                     Ela aparece automaticamente aqui com o efeito cinematográfico */}
                 <div style={{
-                  flex: 1,
-                  minHeight: 520,
+                  flex:         1,
+                  minHeight:    520,
                   borderRadius: 20,
-                  overflow: "hidden",
-                  position: "relative",
-                  border: "1px solid rgba(16,185,129,0.08)",
+                  overflow:     "hidden",
+                  position:     "relative",
+                  border:       "1px solid rgba(16,185,129,0.08)",
                   ...fadeIn(300),
                 }}>
                   {/* Imagem de fundo */}
                   <div style={{
-                    position: "absolute", inset: 0,
-                    backgroundImage: "url('/images/hero-dashboard.png')",
-                    backgroundSize: "cover",
+                    position:           "absolute", inset: 0,
+                    backgroundImage:    "url('/images/hero-dashboard.png')",
+                    backgroundSize:     "cover",
                     backgroundPosition: "center right",
-                    opacity: 0.22,
-                    filter: "blur(1px)",
-                    maskImage: "linear-gradient(to right, transparent 0%, rgba(0,0,0,0.4) 20%, rgba(0,0,0,1) 100%)",
-                    WebkitMaskImage: "linear-gradient(to right, transparent 0%, rgba(0,0,0,0.4) 20%, rgba(0,0,0,1) 100%)",
-                    transition: "opacity 1s ease",
+                    opacity:            0.22,
+                    filter:             "blur(1px)",
+                    maskImage:          "linear-gradient(to right, transparent 0%, rgba(0,0,0,0.4) 20%, rgba(0,0,0,1) 100%)",
+                    WebkitMaskImage:    "linear-gradient(to right, transparent 0%, rgba(0,0,0,0.4) 20%, rgba(0,0,0,1) 100%)",
+                    transition:         "opacity 1s ease",
                   }} />
 
                   {/* Gradiente de integração dark-left */}
                   <div style={{
-                    position: "absolute", inset: 0,
+                    position:   "absolute", inset: 0,
                     background: "linear-gradient(to right, rgba(5,8,16,0.96) 0%, rgba(5,8,16,0.65) 35%, rgba(5,8,16,0.1) 100%)",
                   }} />
 
                   {/* Glow verde ambiental */}
                   <div style={{
-                    position: "absolute", bottom: -60, right: -60,
-                    width: 280, height: 280,
+                    position:     "absolute", bottom: -60, right: -60,
+                    width:        280, height: 280,
                     borderRadius: "50%",
-                    background: "radial-gradient(circle, rgba(16,185,129,0.12) 0%, transparent 70%)",
-                    filter: "blur(40px)",
-                    animation: "pulse-glow 5s ease-in-out infinite",
+                    background:   "radial-gradient(circle, rgba(16,185,129,0.12) 0%, transparent 70%)",
+                    filter:       "blur(40px)",
+                    animation:    "pulse-glow 5s ease-in-out infinite",
                   }} />
 
                   {/* Conteúdo sobre a imagem */}
                   <div style={{
-                    position: "relative", zIndex: 2,
-                    display: "flex", flexDirection: "column",
+                    position:       "relative", zIndex: 2,
+                    display:        "flex", flexDirection: "column",
                     justifyContent: "flex-end",
-                    height: "100%", padding: "36px 36px 44px",
+                    height:         "100%", padding: "36px 36px 44px",
                   }}>
                     {/* Badge premium */}
                     <div style={{
-                      display: "inline-flex", alignItems: "center", gap: 6,
-                      padding: "5px 12px", borderRadius: 20,
-                      background: "rgba(16,185,129,0.08)",
-                      border: "1px solid rgba(16,185,129,0.2)",
+                      display:      "inline-flex", alignItems: "center", gap: 6,
+                      padding:      "5px 12px", borderRadius: 20,
+                      background:   "rgba(16,185,129,0.08)",
+                      border:       "1px solid rgba(16,185,129,0.2)",
                       marginBottom: 16, width: "fit-content",
                     }}>
                       <div style={{ width: 5, height: 5, borderRadius: "50%", background: "#10b981", animation: "blink 2s ease infinite" }} />
@@ -1127,20 +1215,20 @@ export default function Dashboard() {
                     </div>
 
                     <h3 style={{
-                      fontSize: 26, fontWeight: 700,
-                      color: "rgba(255,255,255,0.9)",
-                      margin: "0 0 12px",
-                      lineHeight: 1.25,
+                      fontSize:      26, fontWeight: 700,
+                      color:         "rgba(255,255,255,0.9)",
+                      margin:        "0 0 12px",
+                      lineHeight:    1.25,
                       letterSpacing: "-0.02em",
-                      maxWidth: 360,
+                      maxWidth:      360,
                     }}>
                       Transforme conquistas em<br />
                       <span style={{ color: "#34d399" }}>certificações profissionais.</span>
                     </h3>
 
                     <p style={{
-                      fontSize: 13, color: "rgba(255,255,255,0.35)",
-                      margin: "0 0 28px", lineHeight: 1.7, maxWidth: 340,
+                      fontSize:  13, color: "rgba(255,255,255,0.35)",
+                      margin:    "0 0 28px", lineHeight: 1.7, maxWidth: 340,
                     }}>
                       Emitidos em segundos. Verificáveis instantaneamente.<br />
                       Assinados com SHA-256.
@@ -1149,7 +1237,7 @@ export default function Dashboard() {
                     {/* Stats inline */}
                     <div style={{ display: "flex", gap: 24 }}>
                       {[
-                        { value: "< 3s",   label: "tempo de emissão" },
+                        { value: "< 3s",   label: "tempo de emissão"  },
                         { value: "SHA-256", label: "assinatura digital" },
                         { value: "QR Code", label: "verificação pública" },
                       ].map((s, i) => (
@@ -1210,21 +1298,21 @@ export default function Dashboard() {
                       <div
                         key={cert.id}
                         style={{
-                          position: "relative", marginBottom: 16,
-                          opacity: mounted ? 1 : 0,
-                          transform: mounted ? "translateX(0)" : "translateX(-8px)",
+                          position:   "relative", marginBottom: 16,
+                          opacity:    mounted ? 1 : 0,
+                          transform:  mounted ? "translateX(0)" : "translateX(-8px)",
                           transition: `all 0.4s ease ${i * 60}ms`,
                         }}
                         onMouseEnter={() => logger.table("HIST:ROW", `Hover #${cert.id}`, { nome: cert.nome_participante })}
                       >
-                        {/* Dot */}
+                        {/* Dot na timeline */}
                         <div style={{ position: "absolute", left: -22, top: 18, width: 8, height: 8, borderRadius: "50%", background: i === 0 ? "#10b981" : "rgba(16,185,129,0.3)", border: i === 0 ? "2px solid rgba(16,185,129,0.4)" : "1px solid rgba(16,185,129,0.2)", boxShadow: i === 0 ? "0 0 10px rgba(16,185,129,0.4)" : "none" }} />
 
                         <div style={{
-                          borderRadius: 12, border: "1px solid rgba(255,255,255,0.05)",
-                          background: "rgba(10,15,24,0.6)", padding: "14px 18px",
+                          borderRadius:   12, border: "1px solid rgba(255,255,255,0.05)",
+                          background:     "rgba(10,15,24,0.6)", padding: "14px 18px",
                           backdropFilter: "blur(8px)", transition: "all 0.2s",
-                          cursor: "default",
+                          cursor:         "default",
                         }}
                           onMouseEnter={e => { (e.currentTarget as HTMLDivElement).style.borderColor = "rgba(16,185,129,0.15)"; (e.currentTarget as HTMLDivElement).style.background = "rgba(16,185,129,0.03)"; }}
                           onMouseLeave={e => { (e.currentTarget as HTMLDivElement).style.borderColor = "rgba(255,255,255,0.05)"; (e.currentTarget as HTMLDivElement).style.background = "rgba(10,15,24,0.6)"; }}
@@ -1272,12 +1360,12 @@ export default function Dashboard() {
                   {/* Avatar grande */}
                   <div style={{ display: "flex", alignItems: "center", gap: 18, marginBottom: 28 }}>
                     <div style={{
-                      width: 56, height: 56, borderRadius: "50%",
-                      background: "linear-gradient(135deg, rgba(16,185,129,0.2), rgba(16,185,129,0.04))",
-                      border: "1.5px solid rgba(16,185,129,0.3)",
-                      display: "flex", alignItems: "center", justifyContent: "center",
-                      boxShadow: "0 0 30px rgba(16,185,129,0.15)",
-                      animation: "pulse-glow 4s ease-in-out infinite",
+                      width:        56, height: 56, borderRadius: "50%",
+                      background:   "linear-gradient(135deg, rgba(16,185,129,0.2), rgba(16,185,129,0.04))",
+                      border:       "1.5px solid rgba(16,185,129,0.3)",
+                      display:      "flex", alignItems: "center", justifyContent: "center",
+                      boxShadow:    "0 0 30px rgba(16,185,129,0.15)",
+                      animation:    "pulse-glow 4s ease-in-out infinite",
                     }}>
                       <span style={{ color: "#6ee7b7", fontSize: 18, fontWeight: 700, fontFamily: "monospace" }}>{initials}</span>
                     </div>
@@ -1288,11 +1376,12 @@ export default function Dashboard() {
                   </div>
 
                   {[
-                    { label: "ID da conta",     value: `#${user.id}`,     mono: true },
-                    { label: "Autenticação",     value: user.auth_provider === "google" ? "Google OAuth 2.0" : "Email + Senha", mono: false },
-                    { label: "Plano atual",      value: "Free — 5 emissões/mês", mono: false },
-                    { label: "Emissões no mês",  value: `${metricsThisMonth} de ${PLAN_LIMIT}`, mono: true },
-                    { label: "Membro desde",     value: user.criado_em ? new Date(user.criado_em).toLocaleDateString("pt-BR") : "—", mono: true },
+                    { label: "ID da conta",        value: `#${user.id}`,                                                               mono: true  },
+                    { label: "Autenticação",        value: user.auth_provider === "google" ? "Google OAuth 2.0" : "Email + Senha",      mono: false },
+                    { label: "Identidade",          value: user.cpf_cadastrado ? "✅ CPF verificado" : "⚠️  CPF pendente",              mono: false },
+                    { label: "Plano atual",         value: "Free — 5 emissões/mês",                                                    mono: false },
+                    { label: "Emissões no mês",     value: `${metricsThisMonth} de ${PLAN_LIMIT}`,                                     mono: true  },
+                    { label: "Membro desde",        value: user.criado_em ? new Date(user.criado_em).toLocaleDateString("pt-BR") : "—", mono: true  },
                   ].map((item, i, arr) => (
                     <div key={item.label} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "11px 0", borderBottom: i < arr.length - 1 ? "1px solid rgba(255,255,255,0.04)" : "none" }}>
                       <span style={{ fontSize: 12, color: "rgba(255,255,255,0.25)" }}>{item.label}</span>
@@ -1308,11 +1397,11 @@ export default function Dashboard() {
                     </div>
                     <div style={{ height: 4, background: "rgba(255,255,255,0.05)", borderRadius: 2, overflow: "hidden" }}>
                       <div style={{
-                        height: "100%", borderRadius: 2,
+                        height:     "100%", borderRadius: 2,
                         background: planPct > 80 ? "linear-gradient(90deg, #f87171, #fbbf24)" : "linear-gradient(90deg, #10b981, #34d399)",
-                        width: `${planPct}%`,
+                        width:      `${planPct}%`,
                         transition: "width 1.2s cubic-bezier(0.4,0,0.2,1)",
-                        boxShadow: planPct > 0 ? "0 0 10px rgba(16,185,129,0.5)" : "none",
+                        boxShadow:  planPct > 0 ? "0 0 10px rgba(16,185,129,0.5)" : "none",
                       }} />
                     </div>
                     <p style={{ fontSize: 10, color: "rgba(255,255,255,0.2)", margin: "8px 0 0", fontFamily: "monospace" }}>
