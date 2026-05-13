@@ -1,6 +1,6 @@
 // src/models/User.js
 // ============================================================
-// 🏢 NexaSpark — User Model v2.1 ENTERPRISE DEBUG
+// 🏢 NexaSpark — User Model v2.2 ENTERPRISE DEBUG
 //
 // HISTÓRICO:
 //   v1.0 → CRUD básico
@@ -9,6 +9,13 @@
 //           brightWhite existia em ANSI mas estava AUSENTE
 //           no objeto c — derrubava o servidor no boot.
 //           + Debug nível empresa global em TODOS os métodos
+//   v2.2 → saveCpfAndBirthdate() — novo método para vincular
+//           CPF + data_nascimento de usuários Google OAuth
+//           que não preencheram no cadastro.
+//           Chamado por: POST /api/auth/complete-profile
+//           Controlado por: AuthController.completeProfile()
+//           Disparado por:  CompleteProfileModal (frontend)
+//           Marca cpf_cadastrado = TRUE após salvar.
 //
 // ⚠️  LGPD Art. 46: CPF NUNCA armazenado em texto puro.
 //     Apenas SHA-256 hex uppercase é persistido no banco.
@@ -206,10 +213,10 @@ function hashCpf(cpf) {
   const hash = crypto.createHash('sha256').update(digits, 'utf8').digest('hex').toUpperCase();
 
   logger.lgpd('hashCpf — SHA-256 gerado', {
-    sufixo:    digits.slice(-2),
+    sufixo:      digits.slice(-2),
     hash_prefix: hash.substring(0, 16) + '...[TRUNCADO]',
-    algoritmo: 'SHA-256 (FIPS 180-4)',
-    lgpd:      'Art. 46 — CPF original NÃO armazenado',
+    algoritmo:   'SHA-256 (FIPS 180-4)',
+    lgpd:        'Art. 46 — CPF original NÃO armazenado',
   });
 
   return hash;
@@ -273,12 +280,14 @@ function sanitize(obj) {
 // 🖥️  BOOT — exibido ao carregar o módulo
 // ============================================================
 logger.sepBold();
-console.log(`${ANSI.brightGreen}👤  ${ANSI.bold}${ANSI.brightWhite}NexaSpark User Model v2.1 ENTERPRISE DEBUG${ANSI.reset}`);
-console.log(`${ANSI.gray}    Fix: c.brightWhite is not a function — CORRIGIDO v2.1${ANSI.reset}`);
+console.log(`${ANSI.brightGreen}👤  ${ANSI.bold}${ANSI.brightWhite}NexaSpark User Model v2.2 ENTERPRISE DEBUG${ANSI.reset}`);
+console.log(`${ANSI.gray}    v2.1 Fix: c.brightWhite is not a function — CORRIGIDO${ANSI.reset}`);
+console.log(`${ANSI.gray}    v2.2 Add: saveCpfAndBirthdate() — Google OAuth CPF completion${ANSI.reset}`);
 logger.info('BOOT', 'Módulo carregado com sucesso', {
-  version:    '2.1.0',
-  fix:        'c.brightWhite adicionado ao objeto c (era undefined)',
-  features:   ['SHA-256 CPF hash', 'Device fingerprint', 'IP tracking', 'Abuse score', 'Plan limits'],
+  version:    '2.2.0',
+  fix_v21:    'c.brightWhite adicionado ao objeto c (era undefined)',
+  add_v22:    'saveCpfAndBirthdate() — vincula CPF + data_nascimento para usuários Google',
+  features:   ['SHA-256 CPF hash', 'Device fingerprint', 'IP tracking', 'Abuse score', 'Plan limits', 'Complete profile'],
   lgpd:       'CPF nunca em texto puro — SHA-256 only (Art. 46)',
   plano_free: '3 certificados/mês',
   pid:        process.pid,
@@ -319,9 +328,9 @@ async function create({
   });
 
   logger.db('CREATE', '🗄️  Preparando INSERT INTO users...', {
-    colunas: ['email','senha_hash','cpf_emissor_hash','nome_completo',
-              'telefone','device_fingerprint','ip_cadastro',
-              'plano','plano_limite','abuse_score','bloqueado','criado_em'],
+    colunas:  ['email','senha_hash','cpf_emissor_hash','nome_completo',
+               'telefone','device_fingerprint','ip_cadastro',
+               'plano','plano_limite','abuse_score','bloqueado','criado_em'],
     strategy: 'RETURNING id, email, plano — único round-trip',
   });
 
@@ -356,12 +365,12 @@ async function create({
 
     logger.flow('CREATE', 4, '✅ Usuário persistido no banco', sanitize(user));
     logger.result('CREATE', 'ok', {
-      id:          user.id,
-      email:       user.email,
-      plano:       user.plano,
+      id:           user.id,
+      email:        user.email,
+      plano:        user.plano,
       plano_limite: user.plano_limite,
-      criado_em:   user.criado_em,
-      totalMs:     Date.now() - t0,
+      criado_em:    user.criado_em,
+      totalMs:      Date.now() - t0,
     });
     logger.sep();
 
@@ -448,7 +457,7 @@ async function findByEmail(email) {
     const result = await pool.query(
       `SELECT id, email, senha_hash, nome_completo,
               plano, plano_limite, abuse_score, bloqueado, bloqueado_motivo,
-              auth_provider, nome, avatar, criado_em, atualizado_em
+              auth_provider, nome, avatar, cpf_cadastrado, criado_em, atualizado_em
        FROM users WHERE email = $1`,
       [emailNorm]
     );
@@ -459,16 +468,17 @@ async function findByEmail(email) {
 
     if (user) {
       logger.flow('FIND_EMAIL', 2, '✅ Usuário encontrado no banco', {
-        id:           user.id,
-        email:        user.email,
-        plano:        user.plano,
-        plano_limite: user.plano_limite,
-        auth_provider: user.auth_provider,
-        bloqueado:    user.bloqueado,
-        abuse_score:  user.abuse_score,
-        tem_senha:    !!user.senha_hash,
-        criado_em:    user.criado_em,
-        totalMs:      Date.now() - t0,
+        id:             user.id,
+        email:          user.email,
+        plano:          user.plano,
+        plano_limite:   user.plano_limite,
+        auth_provider:  user.auth_provider,
+        bloqueado:      user.bloqueado,
+        abuse_score:    user.abuse_score,
+        cpf_cadastrado: user.cpf_cadastrado,
+        tem_senha:      !!user.senha_hash,
+        criado_em:      user.criado_em,
+        totalMs:        Date.now() - t0,
       });
 
       if (user.bloqueado) {
@@ -482,9 +492,9 @@ async function findByEmail(email) {
 
       if (user.abuse_score >= 6) {
         logger.abuse(`🚨 Usuário com abuse_score CRÍTICO (${user.abuse_score}) fez login`, {
-          userId:     user.id,
-          email:      user.email,
-          score:      user.abuse_score,
+          userId:       user.id,
+          email:        user.email,
+          score:        user.abuse_score,
           recomendacao: 'Considerar bloqueio automático ou revisão manual',
         });
       }
@@ -527,7 +537,7 @@ async function findById(id) {
     const result = await pool.query(
       `SELECT id, email, nome_completo, nome, avatar,
               plano, plano_limite, abuse_score, bloqueado, bloqueado_motivo,
-              auth_provider, criado_em, atualizado_em
+              auth_provider, cpf_cadastrado, criado_em, atualizado_em
        FROM users WHERE id = $1`,
       [id]
     );
@@ -538,13 +548,14 @@ async function findById(id) {
 
     if (user) {
       logger.flow('FIND_ID', 2, '✅ Usuário encontrado', {
-        id:           user.id,
-        email:        user.email,
-        plano:        user.plano,
-        plano_limite: user.plano_limite,
-        bloqueado:    user.bloqueado,
-        abuse_score:  user.abuse_score,
-        totalMs:      Date.now() - t0,
+        id:             user.id,
+        email:          user.email,
+        plano:          user.plano,
+        plano_limite:   user.plano_limite,
+        bloqueado:      user.bloqueado,
+        abuse_score:    user.abuse_score,
+        cpf_cadastrado: user.cpf_cadastrado,
+        totalMs:        Date.now() - t0,
       });
 
       if (user.bloqueado) {
@@ -835,11 +846,11 @@ async function updateAbuseScore(userId, {
 
       logger.flow('ABUSE_SCORE', 3, '✅ Score atualizado no banco', {
         userId,
-        email:        updated.email,
-        novo_score:   updated.abuse_score,
-        flags_total:  updated.abuse_flags_count,
-        status:       scoreStatus,
-        tipo_flag:    tipo,
+        email:       updated.email,
+        novo_score:  updated.abuse_score,
+        flags_total: updated.abuse_flags_count,
+        status:      scoreStatus,
+        tipo_flag:   tipo,
       });
 
       if (updated.abuse_score >= 10) {
@@ -930,12 +941,12 @@ async function blockAccount(userId, motivo = 'Abuso detectado pelo sistema') {
 
     if (blocked) {
       logger.sec('⛔ CONTA BLOQUEADA COM SUCESSO', {
-        userId:   blocked.id,
-        email:    blocked.email,
-        motivo:   blocked.bloqueado_motivo,
+        userId:    blocked.id,
+        email:     blocked.email,
+        motivo:    blocked.bloqueado_motivo,
         bloqueado: blocked.bloqueado,
-        totalMs:  Date.now() - t0,
-        alerta:   'Próximas tentativas de login retornarão 403 ACCOUNT_BLOCKED',
+        totalMs:   Date.now() - t0,
+        alerta:    'Próximas tentativas de login retornarão 403 ACCOUNT_BLOCKED',
       });
     } else {
       logger.warn('BLOCK', '⚠️  UPDATE não afetou linhas — userId não existe?', { userId });
@@ -1040,6 +1051,210 @@ async function deleteById(id) {
 }
 
 // ============================================================
+// ✅ v2.2 — SAVE CPF AND BIRTHDATE
+//
+// Vincula CPF + data_nascimento a uma conta Google existente.
+//
+// CONTEXTO:
+//   Usuários que cadastraram via Google OAuth não passam pelo
+//   formulário de registro — entram sem CPF. Na primeira vez
+//   que acessam o dashboard, o CompleteProfileModal pede CPF
+//   + data de nascimento e chama POST /api/auth/complete-profile.
+//   O controller valida e chama este método.
+//
+// O QUE FAZ:
+//   1. Faz hash SHA-256 do CPF (LGPD Art. 46)
+//   2. Persiste cpf_emissor_hash + data_nascimento no banco
+//   3. Marca cpf_cadastrado = TRUE
+//   4. Atualiza atualizado_em = NOW()
+//   5. Retorna o usuário atualizado
+//
+// GARANTIAS:
+//   — CPF nunca é salvo em texto puro — apenas o hash
+//   — Operação idempotente: se chamada novamente com mesmo CPF,
+//     apenas atualiza (não cria duplicata)
+//   — Se CPF pertence a outra conta → lança erro com code
+//     CPF_DUPLICATE para o controller tratar
+//
+// CHAMADO POR:
+//   AuthController.completeProfile() → POST /api/auth/complete-profile
+// ============================================================
+async function saveCpfAndBirthdate(userId, cpf, dataNascimento) {
+  const t0 = Date.now();
+
+  logger.sep();
+  logger.sepBold();
+  console.log(`${ANSI.brightGreen}✅  ${ANSI.bold}${ANSI.brightWhite}[User:SAVE_CPF] Vinculando CPF ao perfil Google${ANSI.reset}`);
+  logger.sepBold();
+
+  logger.flow('SAVE_CPF', 1, '🛡️  Iniciando vinculação de CPF + data_nascimento...', {
+    userId,
+    cpf_sufixo:      String(cpf).replace(/\D/g,'').slice(-2),
+    data_nascimento: dataNascimento,
+    finalidade:      'Completar perfil de usuário Google OAuth',
+    lgpd:            'CPF será hasheado — nunca salvo em texto puro',
+  });
+
+  // STEP 1: Gera hash SHA-256 do CPF
+  logger.flow('SAVE_CPF', 2, '🔐 Gerando hash SHA-256 do CPF (LGPD Art. 46)...');
+  const cpfDigitos  = String(cpf).replace(/\D/g, '');
+  const cpfHash     = hashCpf(cpfDigitos);
+
+  logger.lgpd('Hash gerado para vinculação', {
+    sufixo:      cpfDigitos.slice(-2),
+    hash_prefix: cpfHash.substring(0, 16) + '...[TRUNCADO]',
+    algoritmo:   'SHA-256 (FIPS 180-4)',
+    nota:        'O mesmo algoritmo usado no registro — hashes são comparáveis',
+  });
+
+  // STEP 2: Verifica se outro usuário já tem este CPF
+  // Necessário para evitar race condition entre verificação
+  // no controller e o UPDATE aqui — dupla proteção
+  logger.flow('SAVE_CPF', 3, '🔒 Verificando duplicata de CPF (proteção dupla)...');
+
+  try {
+    const tCheck    = Date.now();
+    const checkResult = await pool.query(
+      `SELECT id, email FROM users
+       WHERE cpf_emissor_hash = $1 AND id != $2
+       LIMIT 1`,
+      [cpfHash, userId]
+    );
+    logger.perf('SAVE_CPF', 'SELECT duplicata cpf_emissor_hash', Date.now() - tCheck);
+
+    if (checkResult.rows.length > 0) {
+      const conflito = checkResult.rows[0];
+      logger.abuse('🚨 DUPLICATA DE CPF detectada no saveCpfAndBirthdate', {
+        userId_tentando:    userId,
+        userId_conflito:    conflito.id,
+        email_conflito:     conflito.email,
+        cpf_sufixo:         cpfDigitos.slice(-2),
+        alerta:             '⛔ Mesmo CPF em duas contas — CPF_DUPLICATE',
+        acao:               'Lançar erro para o controller retornar 409',
+      });
+
+      const err  = new Error('CPF já vinculado a outra conta');
+      err.code   = 'CPF_DUPLICATE';
+      err.status = 409;
+      logger.sep();
+      throw err;
+    }
+
+    logger.flow('SAVE_CPF', 4, '✅ CPF livre — prosseguindo com UPDATE...');
+
+  } catch (checkError) {
+    // Re-lança apenas se for o erro de duplicata que criamos
+    if (checkError.code === 'CPF_DUPLICATE') throw checkError;
+
+    // Erro de banco na verificação — loga e continua (fail-open para verificação)
+    logger.warn('SAVE_CPF', '⚠️  Erro ao verificar duplicata — prosseguindo (fail-open)', {
+      message: checkError.message,
+      pg_code: checkError.code,
+      hint:    'A constraint UNIQUE no banco ainda protege contra duplicatas',
+    });
+  }
+
+  // STEP 3: Persiste no banco
+  logger.flow('SAVE_CPF', 5, '🗄️  UPDATE users: cpf_emissor_hash + data_nascimento + cpf_cadastrado...', {
+    userId,
+    campos_atualizados: ['cpf_emissor_hash', 'data_nascimento', 'cpf_cadastrado', 'atualizado_em'],
+    cpf_cadastrado_novo: true,
+    estrategia: 'UPDATE + RETURNING — único round-trip ao banco',
+  });
+
+  try {
+    const tDb    = Date.now();
+    const result = await pool.query(
+      `UPDATE users
+       SET cpf_emissor_hash = $1,
+           data_nascimento  = $2,
+           cpf_cadastrado   = TRUE,
+           atualizado_em    = NOW()
+       WHERE id = $3
+       RETURNING id, email, plano, plano_limite, cpf_cadastrado,
+                 data_nascimento, auth_provider, nome, atualizado_em`,
+      [cpfHash, dataNascimento, userId]
+    );
+
+    logger.perf('SAVE_CPF', 'UPDATE users cpf+nascimento+flag', Date.now() - tDb);
+
+    if (result.rowCount === 0) {
+      logger.error('SAVE_CPF', '💥 UPDATE não afetou nenhuma linha — userId não encontrado', {
+        userId,
+        totalMs: Date.now() - t0,
+        hint:    'Usuário pode ter sido deletado entre o login e o completeProfile',
+      });
+      const err  = new Error('Usuário não encontrado');
+      err.code   = 'USER_NOT_FOUND';
+      err.status = 404;
+      logger.sep();
+      throw err;
+    }
+
+    const updatedUser = result.rows[0];
+
+    logger.flow('SAVE_CPF', 6, '✅ CPF e data de nascimento salvos com sucesso', {
+      userId:         updatedUser.id,
+      email:          updatedUser.email,
+      cpf_sufixo:     cpfDigitos.slice(-2),
+      cpf_cadastrado: updatedUser.cpf_cadastrado,
+      data_nascimento: updatedUser.data_nascimento,
+      plano:          updatedUser.plano,
+      auth_provider:  updatedUser.auth_provider,
+      atualizado_em:  updatedUser.atualizado_em,
+      totalMs:        Date.now() - t0,
+    });
+
+    logger.lgpd('Vinculação LGPD concluída', {
+      userId:      updatedUser.id,
+      cpf_sufixo:  cpfDigitos.slice(-2),
+      armazenado:  'SHA-256 hash only — texto puro descartado',
+      compliant:   'LGPD Art. 46 — proteção por criptografia',
+      cpf_cadastrado: true,
+    });
+
+    logger.result('SAVE_CPF', 'ok', {
+      userId:         updatedUser.id,
+      cpf_cadastrado: true,
+      totalMs:        Date.now() - t0,
+    });
+
+    logger.sep();
+    return updatedUser;
+
+  } catch (error) {
+    // Re-lança erros controlados
+    if (error.code === 'CPF_DUPLICATE' || error.code === 'USER_NOT_FOUND') throw error;
+
+    // Unique constraint — CPF já existe (proteção do banco)
+    if (error.code === '23505') {
+      logger.abuse('🚨 UNIQUE CONSTRAINT: CPF já existe no banco (proteção do banco acionada)', {
+        userId,
+        pg_code: error.code,
+        detail:  error.detail,
+        alerta:  'Race condition ou duplicata não detectada na verificação anterior',
+      });
+      const err  = new Error('CPF já vinculado a outra conta');
+      err.code   = 'CPF_DUPLICATE';
+      err.status = 409;
+      logger.sep();
+      throw err;
+    }
+
+    logger.error('SAVE_CPF', '💥 Erro não tratado ao salvar CPF', {
+      message: error.message,
+      pg_code: error.code,
+      userId,
+      totalMs: Date.now() - t0,
+      hint:    'Verifique se colunas cpf_emissor_hash, data_nascimento e cpf_cadastrado existem — rode migration_complete_profile.sql',
+    });
+    logger.stack('SAVE_CPF', error);
+    logger.sep();
+    throw error;
+  }
+}
+
+// ============================================================
 // 📤 EXPORTS
 // ============================================================
 module.exports = {
@@ -1055,4 +1270,6 @@ module.exports = {
   blockAccount,
   hashCpf,
   validateCpf,
+  // ✅ v2.2: novo método para completar perfil de usuários Google
+  saveCpfAndBirthdate,
 };

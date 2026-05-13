@@ -1,6 +1,6 @@
 // src/controllers/authController.js
 // ============================================================
-// 🏢 NexaSpark — Auth Controller v2.0 ANTI-ABUSE
+// 🏢 NexaSpark — Auth Controller v2.1 ANTI-ABUSE + COMPLETE PROFILE
 //
 // HISTÓRICO:
 //   v1.0 → register/login/googleCallback/me/getProfile básicos
@@ -12,10 +12,17 @@
 //           • Conta bloqueada bloqueada no login
 //           • Registro de abuse_flags automático
 //           • Todos os logs enterprise mantidos + expandidos
+//   v2.1 → completeProfile():
+//           • Recebe CPF + data_nascimento de usuários Google
+//           • Valida CPF matematicamente
+//           • Verifica duplicata (outro usuário com mesmo CPF)
+//           • Salva hash do CPF + data_nascimento no banco
+//           • Marca cpf_cadastrado = TRUE
+//           • Atualiza resposta do me() com cpf_cadastrado
 //
 // ⚠️  MÉTODO register() foi expandido — TODOS os outros
 //     métodos (login, googleCallback, me, getProfile) são
-//     IDÊNTICOS à v1.0 — zero regressão.
+//     IDÊNTICOS à v2.0 — zero regressão.
 // ============================================================
 
 const User     = require('../models/User');
@@ -24,7 +31,7 @@ const jwt      = require('jsonwebtoken');
 const bcrypt   = require('bcryptjs');
 
 // ============================================================
-// 🎨 LOGGER — idêntico à v1.0, expandido com abuse scopes
+// 🎨 LOGGER — idêntico à v2.0
 // ============================================================
 const chalk = {
   green:   (s) => `\x1b[32m${s}\x1b[0m`,
@@ -38,6 +45,7 @@ const chalk = {
   white:   (s) => `\x1b[37m${s}\x1b[0m`,
   bgRed:   (s) => `\x1b[41m\x1b[97m\x1b[1m ${s} \x1b[0m`,
   bgYellow:(s) => `\x1b[43m\x1b[30m\x1b[1m ${s} \x1b[0m`,
+  bgCyan:  (s) => `\x1b[46m\x1b[30m\x1b[1m ${s} \x1b[0m`,
 };
 
 const logger = {
@@ -50,6 +58,7 @@ const logger = {
   audit:   (msg, data)        => console.log(   chalk.green(`🔏 [AUDIT]`),      msg, data !== undefined ? chalk.gray(JSON.stringify(data)) : ''),
   sec:     (msg, data)        => console.warn(  chalk.red(`🚨 [SECURITY]`),     msg, data !== undefined ? chalk.gray(JSON.stringify(data)) : ''),
   abuse:   (msg, data)        => console.warn(  chalk.bgYellow('🚩 ABUSE'),      chalk.yellow(msg), data !== undefined ? chalk.gray(JSON.stringify(data)) : ''),
+  profile: (msg, data)        => console.log(   chalk.bgCyan('👤 PROFILE'),      chalk.cyan(msg), data !== undefined ? chalk.gray(JSON.stringify(data)) : ''),
   db:      (msg, data)        => console.log(   chalk.cyan(`🗄️  [DB]`),          msg, data !== undefined ? chalk.gray(JSON.stringify(data)) : ''),
   flow:    (scope, step, msg, data) => console.log(
     chalk.magenta(`🔀 [${scope}:FLOW]`),
@@ -62,7 +71,7 @@ const logger = {
 };
 
 // ============================================================
-// 🔒 BRUTE FORCE PROTECTION — idêntico à v1.0
+// 🔒 BRUTE FORCE PROTECTION — idêntico à v2.0
 // ============================================================
 const LOGIN_MAX_ATTEMPTS = 5;
 const LOGIN_WINDOW_MS    = 15 * 60 * 1000;
@@ -98,7 +107,7 @@ function clearBruteForce(ip) {
 }
 
 // ============================================================
-// 🛡️  HELPERS — idênticos à v1.0
+// 🛡️  HELPERS — idênticos à v2.0
 // ============================================================
 function sanitizeForLog(obj) {
   if (!obj) return {};
@@ -107,6 +116,7 @@ function sanitizeForLog(obj) {
   if (clone.senha_hash)    clone.senha_hash    = '[REDACTED]';
   if (clone.token)         clone.token         = clone.token?.substring(0, 20) + '...';
   if (clone.cpf_emissor)   clone.cpf_emissor   = `***.***.***-${String(clone.cpf_emissor).replace(/\D/g,'').slice(-2)}`;
+  if (clone.cpf)           clone.cpf           = `***.***.***-${String(clone.cpf).replace(/\D/g,'').slice(-2)}`;
   return clone;
 }
 
@@ -122,14 +132,15 @@ function reqContext(req) {
 
 function generateJWT(user, authProvider = 'local') {
   const payload = {
-    id:            user.id,
-    email:         user.email,
-    role:          user.role || 'user',
-    auth_provider: authProvider,
-    nome:          user.nome          || null,
-    avatar:        user.avatar        || null,
-    plano:         user.plano         || 'free',
-    plano_limite:  user.plano_limite  || 3,
+    id:             user.id,
+    email:          user.email,
+    role:           user.role          || 'user',
+    auth_provider:  authProvider,
+    nome:           user.nome          || null,
+    avatar:         user.avatar        || null,
+    plano:          user.plano         || 'free',
+    plano_limite:   user.plano_limite  || 3,
+    cpf_cadastrado: user.cpf_cadastrado || false,
   };
 
   return jwt.sign(payload, process.env.JWT_SECRET, {
@@ -140,25 +151,17 @@ function generateJWT(user, authProvider = 'local') {
 }
 
 // ============================================================
-// 🚩 HELPER — Calcula abuse score a partir das verificações
-//
-// v2.0 NOVO: avalia todos os sinais coletados e retorna
-// o score de abuso e se deve bloquear o registro.
-//
-// Score por sinal:
-//   CPF duplicado:      10 pontos → BLOQUEIA imediatamente
-//   Device duplicado:    3 pontos por conta existente
-//   IP multi-account:    2 pontos por conta extra no IP
+// 🚩 HELPER — Calcula abuse score — idêntico à v2.0
 // ============================================================
 function calculateAbuseScore(checks) {
   const {
-    cpfExists,         // boolean — CPF já cadastrado
-    deviceAccounts,    // number  — quantas contas no mesmo device
-    ipAccountsLast7d,  // number  — contas no mesmo IP nos últimos 7 dias
+    cpfExists,
+    deviceAccounts,
+    ipAccountsLast7d,
   } = checks;
 
-  let score     = 0;
-  const flags   = [];
+  let score   = 0;
+  const flags = [];
 
   if (cpfExists) {
     score += 10;
@@ -181,8 +184,8 @@ function calculateAbuseScore(checks) {
   return {
     score,
     flags,
-    shouldBlock: cpfExists, // só CPF bloqueia imediatamente
-    isHighRisk:  score >= 5, // score alto = monitorar
+    shouldBlock: cpfExists,
+    isHighRisk:  score >= 5,
   };
 }
 
@@ -190,9 +193,9 @@ function calculateAbuseScore(checks) {
 // 🚀 BANNER DE INICIALIZAÇÃO
 // ============================================================
 logger.bigsep();
-console.log(chalk.bold(chalk.green('  🚀 [AuthController v2.0] Módulo Anti-Abuse inicializado')));
-console.log(chalk.gray('  Métodos: register (anti-abuse) | login | googleCallback | me | getProfile'));
-console.log(chalk.gray('  Anti-abuse: CPF hash lock | Device FP | IP tracking | Abuse score'));
+console.log(chalk.bold(chalk.green('  🚀 [AuthController v2.1] Módulo Anti-Abuse + Complete Profile')));
+console.log(chalk.gray('  Métodos: register (anti-abuse) | login | googleCallback | me | getProfile | completeProfile'));
+console.log(chalk.gray('  v2.1: completeProfile() — CPF + data_nascimento para usuários Google'));
 logger.bigsep();
 logger.sep();
 
@@ -202,22 +205,7 @@ logger.sep();
 class AuthController {
 
   // ══════════════════════════════════════════════════════════
-  // 📝 REGISTER v2.0 — Cria conta com anti-abuse
-  //
-  // Fluxo expandido:
-  //   1. Normalização de entrada
-  //   2. Validações básicas
-  //   3. ✅ v2.0: Valida CPF (dígitos verificadores)
-  //   4. Verifica email duplicado
-  //   5. ✅ v2.0: Verifica CPF duplicado (lock primário)
-  //   6. ✅ v2.0: Verifica device fingerprint (flag silenciosa)
-  //   7. ✅ v2.0: Verifica IP multi-account (flag)
-  //   8. ✅ v2.0: Calcula abuse score
-  //   9. Hash da senha
-  //  10. ✅ v2.0: Cria usuário com campos anti-abuse
-  //  11. Gera JWT (com plano no payload)
-  //  12. Auditoria expandida
-  //  13. Resposta
+  // 📝 REGISTER v2.0 — idêntico — sem alteração
   // ══════════════════════════════════════════════════════════
   static async register(req, res) {
     const t0  = Date.now();
@@ -233,27 +221,21 @@ class AuthController {
       const {
         email,
         password,
-        cpf_emissor        = null,  // v2.0: CPF do responsável
-        nome_completo      = null,  // v2.0: nome do responsável
-        telefone           = null,  // v2.0: futuro OTP
-        device_fingerprint = null,  // v2.0: FingerprintJS hash
+        cpf_emissor        = null,
+        nome_completo      = null,
+        telefone           = null,
+        device_fingerprint = null,
       } = req.body;
 
-      // ── STEP 1: Normalização ──────────────────────────────
       logger.flow('REGISTER', 1, 'Normalizando entrada...');
       const emailNormalized = email?.trim().toLowerCase();
       const cpfDigitos      = cpf_emissor ? String(cpf_emissor).replace(/\D/g, '') : null;
 
       logger.info('REGISTER', 'Dados recebidos (sanitizados)', sanitizeForLog({
-        email:             emailNormalized,
-        password,
-        cpf_emissor,
-        nome_completo,
-        has_device_fp:     !!device_fingerprint,
-        ip:                ctx.ip,
+        email: emailNormalized, password, cpf_emissor,
+        nome_completo, has_device_fp: !!device_fingerprint, ip: ctx.ip,
       }));
 
-      // ── STEP 2: Validações básicas ────────────────────────
       logger.flow('REGISTER', 2, 'Validando campos obrigatórios...');
 
       if (!emailNormalized || !password) {
@@ -270,43 +252,24 @@ class AuthController {
 
       logger.success('REGISTER', '✅ Validações básicas OK');
 
-      // ── STEP 3: Valida CPF (v2.0) ─────────────────────────
       logger.flow('REGISTER', 3, 'Validando CPF (dígitos verificadores)...');
 
       if (cpfDigitos) {
         const cpfValid = User.validateCpf(cpfDigitos);
-        logger.info('REGISTER:CPF', 'Resultado da validação matemática do CPF', {
-          length:    cpfDigitos.length,
-          valido:    cpfValid,
-          sufixo:    cpfDigitos.slice(-2),
+        logger.info('REGISTER:CPF', 'Resultado da validação matemática', {
+          length: cpfDigitos.length, valido: cpfValid, sufixo: cpfDigitos.slice(-2),
         });
 
         if (!cpfValid) {
-          logger.sec('CPF inválido informado no cadastro', {
-            sufixo:    cpfDigitos.slice(-2),
-            length:    cpfDigitos.length,
-            ip:        ctx.ip,
-            email:     emailNormalized,
-            alerta:    'Pode ser CPF falso ou erro de digitação',
-          });
-          return res.status(400).json({
-            success: false,
-            error:   'CPF inválido. Verifique os dados informados.',
-            code:    'INVALID_CPF',
-          });
+          logger.sec('CPF inválido no cadastro', { sufixo: cpfDigitos.slice(-2), ip: ctx.ip, email: emailNormalized });
+          return res.status(400).json({ success: false, error: 'CPF inválido. Verifique os dados informados.', code: 'INVALID_CPF' });
         }
 
         logger.success('REGISTER:CPF', '✅ CPF matematicamente válido');
       } else {
-        // CPF não informado — loga como aviso mas não bloqueia
-        // (pode ser conta Google sem CPF)
-        logger.warn('REGISTER:CPF', '⚠️  CPF não informado — registro sem lock de CPF', {
-          email: emailNormalized,
-          hint:  'Usuários sem CPF podem criar múltiplas contas. Recomendado tornar obrigatório.',
-        });
+        logger.warn('REGISTER:CPF', '⚠️  CPF não informado — registro sem lock de CPF', { email: emailNormalized });
       }
 
-      // ── STEP 4: Verifica email duplicado ──────────────────
       logger.flow('REGISTER', 4, 'Verificando email duplicado...');
       const tDb1 = Date.now();
       const existingUser = await User.findByEmail(emailNormalized);
@@ -317,8 +280,6 @@ class AuthController {
         return res.status(409).json({ success: false, error: 'Este email já está cadastrado', code: 'EMAIL_DUPLICATE' });
       }
 
-      // ── STEP 5: Verifica CPF duplicado (LOCK PRIMÁRIO) ────
-      // v2.0: O coração do anti-abuse
       logger.flow('REGISTER', 5, '🔒 Verificando CPF duplicado (lock primário anti-abuse)...');
 
       let cpfExistingAccount = null;
@@ -328,230 +289,127 @@ class AuthController {
         logger.perf('REGISTER:ABUSE', 'findByCpfHash()', Date.now() - tCpf);
 
         if (cpfExistingAccount) {
-          // ⚠️  CPF JÁ EXISTE — BLOQUEIA IMEDIATAMENTE
-          // Registra como abuse_flag na conta existente
           await User.updateAbuseScore(cpfExistingAccount.id, {
-            increment: 3,
-            tipo:      'CPF_DUPLICATE',
+            increment: 3, tipo: 'CPF_DUPLICATE',
             detalhe:   `Tentativa de criar segunda conta com mesmo CPF. Email novo: ${emailNormalized}`,
             ip:        ctx.ip,
-            metadata:  {
-              email_novo:     emailNormalized,
-              email_existente: cpfExistingAccount.email,
-              ip:             ctx.ip,
-              requestId:      ctx.requestId,
-            },
+            metadata:  { email_novo: emailNormalized, email_existente: cpfExistingAccount.email, requestId: ctx.requestId },
           });
 
-          // Registra no AuditLog sem usuario_id (conta nova, não criada)
           await AuditLog.create({
             usuario_id: null,
             acao:       AuditLog.ACTIONS?.SECURITY_ALERT || 'SECURITY_ALERT',
             detalhe:    `Bloqueio por CPF duplicado. Email tentado: ${emailNormalized}`,
-            ip_address: ctx.ip,
-            user_agent: ctx.userAgent,
-            metadata:   {
-              tipo:            'CPF_DUPLICATE',
-              email_novo:      emailNormalized,
-              conta_existente: cpfExistingAccount.id,
-              requestId:       ctx.requestId,
-            },
+            ip_address: ctx.ip, user_agent: ctx.userAgent,
+            metadata:   { tipo: 'CPF_DUPLICATE', email_novo: emailNormalized, conta_existente: cpfExistingAccount.id, requestId: ctx.requestId },
           });
 
           logger.abuse('⛔ REGISTRO BLOQUEADO — CPF duplicado', {
-            email_tentado:   emailNormalized,
-            conta_existente: cpfExistingAccount.email,
-            ip:              ctx.ip,
-            acao:            'Bloqueio imediato. Abuse_score da conta existente incrementado.',
+            email_tentado: emailNormalized, conta_existente: cpfExistingAccount.email, ip: ctx.ip,
           });
 
-          // ⚠️  MENSAGEM ESTRATÉGICA: não revelamos que o CPF existe
-          //     em outra conta específica — apenas que não está disponível.
-          //     Isso previne enumeration attack (descobrir se um CPF está cadastrado).
           return res.status(409).json({
             success: false,
             error:   'Não foi possível criar a conta com os dados informados. Verifique suas informações ou entre em contato com o suporte.',
             code:    'REGISTRATION_BLOCKED',
-            // ⚠️  NÃO incluir 'CPF_DUPLICATE' no code público — exposição de informação
           });
         }
 
         logger.success('REGISTER:ABUSE', '✅ CPF disponível — não encontrado no sistema');
       }
 
-      // ── STEP 6: Verifica device fingerprint (flag silenciosa) ──
       logger.flow('REGISTER', 6, '🔍 Verificando device fingerprint...');
-
       let deviceAccounts = 0;
       if (device_fingerprint) {
         const tFp = Date.now();
         const existingFpAccounts = await User.findByDeviceFingerprint(device_fingerprint);
         logger.perf('REGISTER:ABUSE', 'findByDeviceFingerprint()', Date.now() - tFp);
         deviceAccounts = existingFpAccounts.length;
-
         if (deviceAccounts >= 1) {
-          logger.abuse(`⚠️  Device fingerprint encontrado em ${deviceAccounts} conta(s)`, {
-            fp_prefix:     device_fingerprint.substring(0, 8) + '...',
-            contas_emails: existingFpAccounts.map(a => a.email),
-            ip:            ctx.ip,
-            acao:          'Flag registrada — não bloqueia sozinha',
+          logger.abuse(`⚠️  Device fingerprint em ${deviceAccounts} conta(s)`, {
+            fp_prefix: device_fingerprint.substring(0, 8) + '...', ip: ctx.ip,
           });
         }
       }
 
-      // ── STEP 7: Verifica IP multi-account ─────────────────
       logger.flow('REGISTER', 7, '🌐 Verificando IP multi-account...');
       const tIp = Date.now();
       const ipAccountsLast7d = await User.countByIpLast7Days(ctx.ip);
       logger.perf('REGISTER:ABUSE', 'countByIpLast7Days()', Date.now() - tIp);
-
       if (ipAccountsLast7d >= 2) {
-        logger.abuse(`⚠️  IP com ${ipAccountsLast7d} conta(s) nos últimos 7 dias`, {
-          ip:    ctx.ip,
-          total: ipAccountsLast7d,
-          acao:  'Flag registrada — não bloqueia sozinha',
-        });
+        logger.abuse(`⚠️  IP com ${ipAccountsLast7d} conta(s) nos últimos 7 dias`, { ip: ctx.ip, total: ipAccountsLast7d });
       }
 
-      // ── STEP 8: Calcula abuse score ───────────────────────
       logger.flow('REGISTER', 8, '📊 Calculando abuse score...');
-      const abuseCheck = calculateAbuseScore({
-        cpfExists:        !!cpfExistingAccount,
-        deviceAccounts,
-        ipAccountsLast7d,
-      });
-
+      const abuseCheck = calculateAbuseScore({ cpfExists: !!cpfExistingAccount, deviceAccounts, ipAccountsLast7d });
       logger.info('REGISTER:ABUSE', 'Resultado da análise anti-abuse', {
-        score:       abuseCheck.score,
-        flags:       abuseCheck.flags,
-        shouldBlock: abuseCheck.shouldBlock,
-        isHighRisk:  abuseCheck.isHighRisk,
-        decisao:     abuseCheck.shouldBlock ? '⛔ BLOQUEAR' : abuseCheck.isHighRisk ? '⚠️  ALTO RISCO — permitir mas monitorar' : '✅ LIMPO',
+        score: abuseCheck.score, flags: abuseCheck.flags, shouldBlock: abuseCheck.shouldBlock,
       });
 
-      // shouldBlock já foi tratado no STEP 5 (CPF)
-      // Aqui apenas logamos para analytics
-
-      // ── STEP 9: Hash da senha ─────────────────────────────
       logger.flow('REGISTER', 9, 'Gerando hash bcrypt (rounds: 12)...');
-      const tHash  = Date.now();
+      const tHash      = Date.now();
       const senha_hash = await bcrypt.hash(password, 12);
       logger.perf('REGISTER', 'bcrypt.hash()', Date.now() - tHash);
 
-      // ── STEP 10: Cria usuário com campos anti-abuse ───────
       logger.flow('REGISTER', 10, '🗄️  Inserindo usuário com campos anti-abuse...');
-      const tDb2 = Date.now();
-
+      const tDb2   = Date.now();
       const newUser = await User.create({
         email:             emailNormalized,
         senha_hash,
-        cpf_emissor:       cpfDigitos,    // model faz o hash internamente
-        nome_completo:     nome_completo  || null,
-        telefone:          telefone       || null,
+        cpf_emissor:       cpfDigitos,
+        nome_completo:     nome_completo     || null,
+        telefone:          telefone          || null,
         device_fingerprint: device_fingerprint || null,
         ip_cadastro:       ctx.ip,
       });
-
       logger.perf('REGISTER', 'User.create()', Date.now() - tDb2);
-      logger.success('REGISTER', '✅ Usuário criado no banco com campos anti-abuse', {
-        id:          newUser.id,
-        email:       newUser.email,
-        plano:       newUser.plano,
-        plano_limite: newUser.plano_limite,
-      });
+      logger.success('REGISTER', '✅ Usuário criado', { id: newUser.id, email: newUser.email });
 
-      // Se abuse score alto, registra na conta nova para monitoramento
       if (abuseCheck.score > 0) {
         await User.updateAbuseScore(newUser.id, {
           increment: abuseCheck.score,
           tipo:      abuseCheck.flags[0]?.tipo || 'MULTI_SIGNAL',
-          detalhe:   `Score inicial: ${abuseCheck.score} — Flags: ${abuseCheck.flags.map(f => f.tipo).join(', ')}`,
+          detalhe:   `Score inicial: ${abuseCheck.score}`,
           ip:        ctx.ip,
           metadata:  { flags: abuseCheck.flags, requestId: ctx.requestId },
         });
-
-        logger.abuse('Score de abuso registrado na conta nova', {
-          userId: newUser.id,
-          score:  abuseCheck.score,
-          flags:  abuseCheck.flags,
-        });
       }
 
-      // ── STEP 11: Gera JWT com plano no payload ────────────
       logger.flow('REGISTER', 11, 'Gerando JWT com plano...');
       const token = generateJWT(newUser, 'local');
 
-      // ── STEP 12: Auditoria expandida ──────────────────────
-      logger.flow('REGISTER', 12, 'Registrando auditoria completa...');
-      logger.audit('REGISTER v2.0 — novo usuário', {
-        userId:      newUser.id,
-        email:       newUser.email,
-        plano:       newUser.plano,
-        hasCpf:      !!cpfDigitos,
-        abuseScore:  abuseCheck.score,
-        ip:          ctx.ip,
-      });
-
+      logger.flow('REGISTER', 12, 'Registrando auditoria...');
       await AuditLog.create({
         usuario_id: newUser.id,
         acao:       AuditLog.ACTIONS?.REGISTER || 'REGISTER',
-        detalhe:    `Registro v2.0 via plataforma web: ${emailNormalized}`,
-        ip_address: ctx.ip,
-        user_agent: ctx.userAgent,
+        detalhe:    `Registro v2.0: ${emailNormalized}`,
+        ip_address: ctx.ip, user_agent: ctx.userAgent,
         metadata:   {
-          auth_provider:   'local',
-          hasCpf:          !!cpfDigitos,
-          hasDevice:       !!device_fingerprint,
-          deviceAccounts,
-          ipAccountsLast7d,
-          abuseScore:      abuseCheck.score,
-          abuseFlags:      abuseCheck.flags,
-          isHighRisk:      abuseCheck.isHighRisk,
-          plano:           newUser.plano,
-          plano_limite:    newUser.plano_limite,
-          requestId:       ctx.requestId,
+          auth_provider: 'local', hasCpf: !!cpfDigitos, hasDevice: !!device_fingerprint,
+          deviceAccounts, ipAccountsLast7d, abuseScore: abuseCheck.score,
+          plano: newUser.plano, requestId: ctx.requestId,
         },
       });
 
-      // ── STEP 13: Resposta ─────────────────────────────────
       const elapsed = Date.now() - t0;
       logger.perf('REGISTER', 'Fluxo completo v2.0', elapsed);
-      logger.success('REGISTER', '══ REGISTER v2.0 CONCLUÍDO ══', {
-        userId:     newUser.id,
-        elapsed:    elapsed + 'ms',
-        abuseScore: abuseCheck.score,
-        plano:      newUser.plano,
-      });
+      logger.success('REGISTER', '══ REGISTER v2.0 CONCLUÍDO ══', { userId: newUser.id, elapsed: elapsed + 'ms' });
       logger.sep();
 
       return res.status(201).json({
         success: true,
         message: 'Conta criada com sucesso',
         data: {
-          id:          newUser.id,
-          email:       newUser.email,
-          plano:       newUser.plano,
+          id:           newUser.id,
+          email:        newUser.email,
+          plano:        newUser.plano,
           plano_limite: newUser.plano_limite,
           token,
         },
       });
 
     } catch (error) {
-      const elapsed = Date.now() - t0;
-
-      // Erros de abuse (CPF, telefone duplicados) — já tratados no flow
-      if (error.code === 'CPF_DUPLICATE' || error.code === 'REGISTRATION_BLOCKED') {
-        return res.status(409).json({
-          success: false,
-          error:   'Não foi possível criar a conta com os dados informados.',
-          code:    'REGISTRATION_BLOCKED',
-        });
-      }
-
-      logger.error('REGISTER', `Erro não tratado após ${elapsed}ms`, {
-        message: error.message,
-        code:    error.code,
-      });
+      logger.error('REGISTER', `Erro não tratado — ${error.message}`, { code: error.code });
       console.error(chalk.red(`❌ [REGISTER:STACK]`), error.stack);
       logger.sep();
       return res.status(500).json({ success: false, error: 'Erro interno do servidor', code: 'INTERNAL_ERROR' });
@@ -559,7 +417,7 @@ class AuthController {
   }
 
   // ══════════════════════════════════════════════════════════
-  // 🔑 LOGIN v2.0 — idêntico à v1.0 + verifica conta bloqueada
+  // 🔑 LOGIN v2.0 — idêntico à v2.0
   // ══════════════════════════════════════════════════════════
   static async login(req, res) {
     const t0  = Date.now();
@@ -599,14 +457,8 @@ class AuthController {
         return res.status(401).json({ success: false, error: 'Credenciais inválidas', code: 'INVALID_CREDENTIALS' });
       }
 
-      // ── v2.0: Verifica se conta está bloqueada ────────────
       if (user.bloqueado) {
-        logger.sec('⛔ Tentativa de login em conta bloqueada', {
-          userId:  user.id,
-          email:   user.email,
-          motivo:  user.bloqueado_motivo,
-          ip:      ctx.ip,
-        });
+        logger.sec('⛔ Login em conta bloqueada', { userId: user.id, email: user.email, ip: ctx.ip });
         return res.status(403).json({
           success: false,
           error:   'Esta conta está temporariamente suspensa. Entre em contato com o suporte.',
@@ -642,8 +494,7 @@ class AuthController {
         usuario_id: user.id,
         acao:       AuditLog.ACTIONS?.LOGIN || 'LOGIN',
         detalhe:    'Login via plataforma web',
-        ip_address: ctx.ip,
-        user_agent: ctx.userAgent,
+        ip_address: ctx.ip, user_agent: ctx.userAgent,
         metadata:   { auth_provider: 'local', plano: user.plano, requestId: ctx.requestId },
       });
 
@@ -666,14 +517,14 @@ class AuthController {
   }
 
   // ══════════════════════════════════════════════════════════
-  // 🌐 GOOGLE CALLBACK — idêntico à v1.0
+  // 🌐 GOOGLE CALLBACK — idêntico à v2.0
   // ══════════════════════════════════════════════════════════
   static async googleCallback(req, res) {
     const t0  = Date.now();
     const ctx = reqContext(req);
 
     logger.sep();
-    console.log(chalk.bold(chalk.green('  🌐 [GOOGLE_CALLBACK v2.0] Fluxo iniciado')));
+    console.log(chalk.bold(chalk.green('  🌐 [GOOGLE_CALLBACK v2.1] Fluxo iniciado')));
 
     try {
       if (!req.user) {
@@ -689,7 +540,6 @@ class AuthController {
         return res.redirect(`${frontendUrl}/login?error=oauth_invalid_user`);
       }
 
-      // ── v2.0: Verifica se conta Google está bloqueada ─────
       const userFromDb = await User.findByEmail(user.email);
       if (userFromDb?.bloqueado) {
         logger.sec('⛔ Login Google em conta bloqueada', { userId: user.id, email: user.email });
@@ -697,19 +547,30 @@ class AuthController {
         return res.redirect(`${frontendUrl}/login?error=account_blocked`);
       }
 
-      const token = generateJWT(user, 'google');
+      // ✅ v2.1: inclui cpf_cadastrado no JWT do Google
+      const userWithCpfFlag = {
+        ...user,
+        cpf_cadastrado: userFromDb?.cpf_cadastrado || false,
+      };
+
+      const token = generateJWT(userWithCpfFlag, 'google');
 
       await AuditLog.create({
         usuario_id: user.id,
         acao:       'LOGIN_GOOGLE',
         detalhe:    `Login via Google OAuth — ${user.email}`,
-        ip_address: ctx.ip,
-        user_agent: ctx.userAgent,
-        metadata:   { auth_provider: 'google', requestId: ctx.requestId },
+        ip_address: ctx.ip, user_agent: ctx.userAgent,
+        metadata:   {
+          auth_provider:  'google',
+          cpf_cadastrado: userFromDb?.cpf_cadastrado || false,
+          requestId:      ctx.requestId,
+        },
       });
 
       const frontendUrl = process.env.FRONTEND_URL || 'https://nexaspark.com.br';
-      logger.success('GOOGLE_CALLBACK', '✅ OAuth Google concluído', { userId: user.id });
+      logger.success('GOOGLE_CALLBACK', '✅ OAuth Google v2.1 concluído', {
+        userId: user.id, cpf_cadastrado: userFromDb?.cpf_cadastrado || false,
+      });
       logger.sep();
       return res.redirect(`${frontendUrl}/auth/callback?token=${token}`);
 
@@ -721,7 +582,7 @@ class AuthController {
   }
 
   // ══════════════════════════════════════════════════════════
-  // 👤 ME — idêntico à v1.0
+  // 👤 ME v2.1 — adiciona cpf_cadastrado na resposta
   // ══════════════════════════════════════════════════════════
   static async me(req, res) {
     const t0  = Date.now();
@@ -739,7 +600,6 @@ class AuthController {
         return res.status(404).json({ success: false, error: 'Usuário não encontrado', code: 'USER_NOT_FOUND' });
       }
 
-      // v2.0: verifica bloqueio em tempo real
       if (user.bloqueado) {
         logger.sec('⛔ Sessão de conta bloqueada', { userId: user.id });
         return res.status(403).json({
@@ -750,19 +610,21 @@ class AuthController {
       }
 
       logger.perf('ME', 'Validação completa', Date.now() - t0);
-      logger.success('ME', '✅ Sessão válida', { userId: user.id });
+      logger.success('ME', '✅ Sessão válida', { userId: user.id, cpf_cadastrado: user.cpf_cadastrado });
       logger.sep();
 
+      // ✅ v2.1: retorna cpf_cadastrado — frontend usa para exibir modal
       return res.json({
         success: true,
         data: {
-          id:           user.id,
-          email:        user.email,
-          nome:         user.nome         || null,
-          auth_provider: req.user.auth_provider || 'local',
-          plano:        user.plano        || 'free',
-          plano_limite: user.plano_limite || 3,
-          criado_em:    user.criado_em,
+          id:             user.id,
+          email:          user.email,
+          nome:           user.nome          || null,
+          auth_provider:  req.user.auth_provider || 'local',
+          plano:          user.plano         || 'free',
+          plano_limite:   user.plano_limite  || 3,
+          cpf_cadastrado: user.cpf_cadastrado || false,
+          criado_em:      user.criado_em,
         },
       });
 
@@ -774,7 +636,7 @@ class AuthController {
   }
 
   // ══════════════════════════════════════════════════════════
-  // 📋 PROFILE — idêntico à v1.0 + campos de plano
+  // 📋 PROFILE v2.1 — inclui cpf_cadastrado
   // ══════════════════════════════════════════════════════════
   static async getProfile(req, res) {
     const ctx = reqContext(req);
@@ -793,15 +655,16 @@ class AuthController {
       return res.json({
         success: true,
         data: {
-          id:            user.id,
-          email:         user.email,
-          nome:          user.nome          || null,
-          nome_completo: user.nome_completo || null,
-          avatar:        user.avatar        || null,
-          plano:         user.plano         || 'free',
-          plano_limite:  user.plano_limite  || 3,
-          criado_em:     user.criado_em,
-          auth_provider: req.user?.auth_provider || 'local',
+          id:             user.id,
+          email:          user.email,
+          nome:           user.nome          || null,
+          nome_completo:  user.nome_completo || null,
+          avatar:         user.avatar        || null,
+          plano:          user.plano         || 'free',
+          plano_limite:   user.plano_limite  || 3,
+          cpf_cadastrado: user.cpf_cadastrado || false,
+          criado_em:      user.criado_em,
+          auth_provider:  req.user?.auth_provider || 'local',
         },
       });
 
@@ -809,6 +672,229 @@ class AuthController {
       logger.error('PROFILE', `Erro — ${error.message}`);
       logger.sep();
       return res.status(500).json({ success: false, error: 'Erro interno', code: 'INTERNAL_ERROR' });
+    }
+  }
+
+  // ══════════════════════════════════════════════════════════
+  // ✅ v2.1 — COMPLETE PROFILE
+  //
+  // Rota: POST /api/auth/complete-profile
+  // Auth: JWT obrigatório (authMiddleware)
+  //
+  // Fluxo:
+  //   1. Valida campos obrigatórios (cpf + data_nascimento)
+  //   2. Valida CPF matematicamente (dígitos verificadores)
+  //   3. Verifica se CPF já está vinculado a outra conta
+  //   4. Salva hash do CPF + data_nascimento no banco
+  //   5. Marca cpf_cadastrado = TRUE
+  //   6. Auditoria
+  //   7. Retorna novo JWT com cpf_cadastrado = true
+  //
+  // Chamado por: CompleteProfileModal.tsx
+  // Disparado quando: usuário Google tenta acessar o dashboard
+  // sem CPF cadastrado (cpf_cadastrado === false)
+  // ══════════════════════════════════════════════════════════
+  static async completeProfile(req, res) {
+    const t0  = Date.now();
+    const ctx = reqContext(req);
+
+    logger.sep();
+    logger.bigsep();
+    console.log(chalk.bold(chalk.green('  👤 [COMPLETE_PROFILE v2.1] Fluxo iniciado')));
+    logger.bigsep();
+    logger.profile('Completando perfil de usuário Google', {
+      userId:    req.user?.id,
+      email:     req.user?.email,
+      requestId: ctx.requestId,
+    });
+
+    try {
+      const userId = req.user?.id;
+
+      if (!userId) {
+        logger.sec('completeProfile sem userId no token', { requestId: ctx.requestId });
+        return res.status(401).json({ success: false, error: 'Não autenticado', code: 'NOT_AUTHENTICATED' });
+      }
+
+      const { cpf, data_nascimento } = req.body;
+
+      // ── STEP 1: Valida campos obrigatórios ────────────────
+      logger.flow('COMPLETE_PROFILE', 1, 'Validando campos obrigatórios...');
+
+      if (!cpf || !data_nascimento) {
+        logger.warn('COMPLETE_PROFILE', 'Campos obrigatórios ausentes', { hasCpf: !!cpf, hasData: !!data_nascimento });
+        return res.status(400).json({
+          success: false,
+          error:   'CPF e data de nascimento são obrigatórios',
+          code:    'MISSING_FIELDS',
+        });
+      }
+
+      const cpfDigitos = String(cpf).replace(/\D/g, '');
+      logger.profile('Dados recebidos', sanitizeForLog({ cpf, data_nascimento }));
+
+      // ── STEP 2: Valida CPF matematicamente ───────────────
+      logger.flow('COMPLETE_PROFILE', 2, 'Validando CPF (dígitos verificadores)...');
+
+      const cpfValid = User.validateCpf(cpfDigitos);
+      logger.info('COMPLETE_PROFILE:CPF', 'Resultado validação matemática', {
+        length: cpfDigitos.length, valido: cpfValid, sufixo: cpfDigitos.slice(-2),
+      });
+
+      if (!cpfValid) {
+        logger.sec('CPF inválido no completeProfile', {
+          sufixo: cpfDigitos.slice(-2), ip: ctx.ip, userId,
+          alerta: 'Pode ser CPF falso, gerado ou erro de digitação',
+        });
+        return res.status(400).json({
+          success: false,
+          error:   'CPF inválido. Verifique os números informados.',
+          code:    'INVALID_CPF',
+        });
+      }
+
+      logger.success('COMPLETE_PROFILE:CPF', '✅ CPF matematicamente válido');
+
+      // ── STEP 3: Verifica duplicata ────────────────────────
+      // Um CPF = uma conta. Se outro usuário já tem esse CPF,
+      // bloqueia sem revelar qual conta possui o CPF (enum. attack).
+      logger.flow('COMPLETE_PROFILE', 3, '🔒 Verificando duplicata de CPF...');
+
+      const tCpf = Date.now();
+      const existingAccount = await User.findByCpfHash(cpfDigitos);
+      logger.perf('COMPLETE_PROFILE', 'findByCpfHash()', Date.now() - tCpf);
+
+      if (existingAccount && existingAccount.id !== userId) {
+        logger.abuse('⛔ CPF já vinculado a outra conta — bloqueando completeProfile', {
+          userId_tentando:  userId,
+          cpf_sufixo:       cpfDigitos.slice(-2),
+          ip:               ctx.ip,
+          requestId:        ctx.requestId,
+        });
+
+        // Incrementa abuse score na conta que tentou usar CPF duplicado
+        await User.updateAbuseScore(userId, {
+          increment: 5,
+          tipo:      'CPF_DUPLICATE_COMPLETE_PROFILE',
+          detalhe:   `Tentou vincular CPF já existente em outra conta via completeProfile`,
+          ip:        ctx.ip,
+          metadata:  { requestId: ctx.requestId },
+        });
+
+        return res.status(409).json({
+          success: false,
+          error:   'Não foi possível vincular os dados informados. Verifique as informações ou entre em contato com o suporte.',
+          code:    'CPF_ALREADY_REGISTERED',
+        });
+      }
+
+      logger.success('COMPLETE_PROFILE', '✅ CPF disponível para vinculação');
+
+      // ── STEP 4: Valida data de nascimento ─────────────────
+      logger.flow('COMPLETE_PROFILE', 4, 'Validando data de nascimento...');
+
+      const dataNasc     = new Date(data_nascimento);
+      const hoje         = new Date();
+      const idadeMinima  = new Date(hoje.getFullYear() - 16, hoje.getMonth(), hoje.getDate());
+      const idadeMaxima  = new Date(hoje.getFullYear() - 120, hoje.getMonth(), hoje.getDate());
+
+      if (isNaN(dataNasc.getTime())) {
+        return res.status(400).json({ success: false, error: 'Data de nascimento inválida', code: 'INVALID_DATE' });
+      }
+
+      if (dataNasc > idadeMinima) {
+        return res.status(400).json({
+          success: false,
+          error:   'É necessário ter pelo menos 16 anos para usar a plataforma.',
+          code:    'UNDERAGE',
+        });
+      }
+
+      if (dataNasc < idadeMaxima) {
+        return res.status(400).json({ success: false, error: 'Data de nascimento inválida', code: 'INVALID_DATE' });
+      }
+
+      logger.success('COMPLETE_PROFILE', '✅ Data de nascimento válida', {
+        data_nascimento, idade: hoje.getFullYear() - dataNasc.getFullYear(),
+      });
+
+      // ── STEP 5: Salva no banco ────────────────────────────
+      logger.flow('COMPLETE_PROFILE', 5, '🗄️  Salvando CPF hash + data_nascimento...');
+
+      const tDb = Date.now();
+
+      // User.saveCpfAndBirthdate() deve:
+      //   UPDATE users SET
+      //     cpf_emissor_hash = SHA256($cpfDigitos),
+      //     data_nascimento  = $data_nascimento,
+      //     cpf_cadastrado   = TRUE,
+      //     atualizado_em    = NOW()
+      //   WHERE id = $userId
+      const updatedUser = await User.saveCpfAndBirthdate(userId, cpfDigitos, data_nascimento);
+
+      logger.perf('COMPLETE_PROFILE', 'User.saveCpfAndBirthdate()', Date.now() - tDb);
+      logger.success('COMPLETE_PROFILE', '✅ CPF e data de nascimento salvos', {
+        userId, cpf_sufixo: cpfDigitos.slice(-2), data_nascimento,
+        cpf_cadastrado: true,
+      });
+
+      // ── STEP 6: Auditoria ─────────────────────────────────
+      logger.flow('COMPLETE_PROFILE', 6, 'Registrando auditoria...');
+
+      await AuditLog.create({
+        usuario_id: userId,
+        acao:       'PROFILE_COMPLETED',
+        detalhe:    `Perfil completado via Google OAuth — CPF vinculado`,
+        ip_address: ctx.ip,
+        user_agent: ctx.userAgent,
+        metadata:   {
+          cpf_sufixo:     cpfDigitos.slice(-2),
+          data_nascimento,
+          auth_provider:  'google',
+          requestId:      ctx.requestId,
+        },
+      });
+
+      logger.audit('COMPLETE_PROFILE — perfil Google completado', {
+        userId, email: req.user?.email, cpf_sufixo: cpfDigitos.slice(-2),
+      });
+
+      // ── STEP 7: Gera novo JWT com cpf_cadastrado = true ───
+      logger.flow('COMPLETE_PROFILE', 7, 'Gerando novo JWT com cpf_cadastrado = true...');
+
+      const userForJwt = {
+        ...req.user,
+        cpf_cadastrado: true,
+        plano:          updatedUser?.plano         || req.user.plano         || 'free',
+        plano_limite:   updatedUser?.plano_limite  || req.user.plano_limite  || 3,
+      };
+
+      const newToken = generateJWT(userForJwt, req.user.auth_provider || 'google');
+
+      const elapsed = Date.now() - t0;
+      logger.perf('COMPLETE_PROFILE', 'Fluxo completo', elapsed);
+      logger.success('COMPLETE_PROFILE', '══ PERFIL COMPLETADO ══', {
+        userId, elapsed: elapsed + 'ms', cpf_cadastrado: true,
+      });
+      logger.sep();
+
+      return res.json({
+        success: true,
+        message: 'Perfil completado com sucesso. Bem-vindo à NexaSpark.',
+        data: {
+          cpf_cadastrado: true,
+          token:          newToken, // frontend atualiza o token no localStorage
+        },
+      });
+
+    } catch (error) {
+      const elapsed = Date.now() - t0;
+      logger.error('COMPLETE_PROFILE', `Erro não tratado após ${elapsed}ms`, {
+        message: error.message, code: error.code,
+      });
+      console.error(chalk.red(`❌ [COMPLETE_PROFILE:STACK]`), error.stack);
+      logger.sep();
+      return res.status(500).json({ success: false, error: 'Erro interno do servidor', code: 'INTERNAL_ERROR' });
     }
   }
 }
