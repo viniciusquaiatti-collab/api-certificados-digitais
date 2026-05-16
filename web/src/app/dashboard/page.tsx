@@ -87,7 +87,7 @@ const logger = {
 
 const API_URL            = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8080";
 const SESSION_TIMEOUT_MS = 6 * 60 * 1000;
-const PLAN_LIMIT         = 5;
+
 
 // ============================================================
 // 📋 TIPOS
@@ -103,6 +103,8 @@ interface User {
   // true  = CPF já vinculado → dashboard liberado normalmente
   cpf_cadastrado?: boolean;
   criado_em?:      string;
+  plano?:          string;
+  plano_limite?:   number;
 }
 
 interface Certificate {
@@ -734,8 +736,9 @@ export default function Dashboard() {
   if (!user) return null;
 
   const initials = (user.nome || user.email).substring(0, 2).toUpperCase();
+  const planLimit = user?.plano_limite ?? 2;
   const planUsed = metricsThisMonth;
-  const planPct  = Math.min((planUsed / PLAN_LIMIT) * 100, 100);
+  const planPct  = Math.min((planUsed / planLimit) * 100, 100);
 
   logger.info("RENDER", "Renderizando Dashboard v3.1 Luxury", {
     userId:        user.id,
@@ -905,7 +908,7 @@ export default function Dashboard() {
             <div style={{ padding: "12px 16px", borderTop: "1px solid rgba(16,185,129,0.06)", borderBottom: "1px solid rgba(16,185,129,0.06)" }}>
               <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 6 }}>
                 <span style={{ fontSize: 9, color: "rgba(255,255,255,0.25)", letterSpacing: "0.1em", textTransform: "uppercase", fontFamily: "monospace" }}>Plano Free</span>
-                <span style={{ fontSize: 9, color: planPct > 80 ? "#f87171" : "rgba(16,185,129,0.6)", fontFamily: "monospace" }}>{planUsed}/{PLAN_LIMIT}</span>
+                <span style={{ fontSize: 9, color: planPct > 80 ? "#f87171" : "rgba(16,185,129,0.6)", fontFamily: "monospace" }}>{planUsed}/{planLimit}</span>
               </div>
               <div style={{ height: 3, background: "rgba(255,255,255,0.05)", borderRadius: 2, overflow: "hidden" }}>
                 <div style={{
@@ -1000,7 +1003,7 @@ export default function Dashboard() {
               {[
                 { label: "Este mês",    value: countMonth, unit: "emissões",       color: "#10b981", glow: "rgba(16,185,129,0.12)",  border: "rgba(16,185,129,0.15)", delay: 100 },
                 { label: "Total geral", value: countTotal, unit: "certificados",   color: "#60a5fa", glow: "rgba(96,165,250,0.12)",  border: "rgba(96,165,250,0.15)",  delay: 200 },
-                { label: "Plano",       value: "Free",     unit: "5 emissões/mês", color: "#fbbf24", glow: "rgba(251,191,36,0.12)", border: "rgba(251,191,36,0.15)",  delay: 300 },
+                { label: "Plano",       value: user.plano ? user.plano.charAt(0).toUpperCase() + user.plano.slice(1) : "Free", unit: `${planLimit} emissões/mês`, color: "#fbbf24", glow: "rgba(251,191,36,0.12)", border: "rgba(251,191,36,0.15)",  delay: 300 },
               ].map((m, i) => (
                 <div key={i} style={{
                   ...fadeIn(m.delay),
@@ -1379,8 +1382,8 @@ export default function Dashboard() {
                     { label: "ID da conta",        value: `#${user.id}`,                                                               mono: true  },
                     { label: "Autenticação",        value: user.auth_provider === "google" ? "Google OAuth 2.0" : "Email + Senha",      mono: false },
                     { label: "Identidade",          value: user.cpf_cadastrado ? "✅ CPF verificado" : "⚠️  CPF pendente",              mono: false },
-                    { label: "Plano atual",         value: "Free — 5 emissões/mês",                                                    mono: false },
-                    { label: "Emissões no mês",     value: `${metricsThisMonth} de ${PLAN_LIMIT}`,                                     mono: true  },
+                    { label: "Plano atual",         value: `${user.plano ? user.plano.charAt(0).toUpperCase() + user.plano.slice(1) : "Free"} — ${planLimit} emissões/mês`,                                                    mono: false },
+                    { label: "Emissões no mês",     value: `${metricsThisMonth} de ${planLimit}`,                                     mono: true  },
                     { label: "Membro desde",        value: user.criado_em ? new Date(user.criado_em).toLocaleDateString("pt-BR") : "—", mono: true  },
                   ].map((item, i, arr) => (
                     <div key={item.label} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "11px 0", borderBottom: i < arr.length - 1 ? "1px solid rgba(255,255,255,0.04)" : "none" }}>
@@ -1405,7 +1408,7 @@ export default function Dashboard() {
                       }} />
                     </div>
                     <p style={{ fontSize: 10, color: "rgba(255,255,255,0.2)", margin: "8px 0 0", fontFamily: "monospace" }}>
-                      {PLAN_LIMIT - metricsThisMonth} emissões restantes este mês
+                      {planLimit - metricsThisMonth} emissões restantes este mês
                     </p>
                   </div>
                 </div>
