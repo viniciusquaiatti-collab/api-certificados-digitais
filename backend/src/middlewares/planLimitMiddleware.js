@@ -94,7 +94,7 @@ async function planLimitMiddleware(req, res, next) {
   try {
     // ── Planos ilimitados passam direto ───────────────────
     const plano        = req.user?.plano        || 'free';
-    const plano_limite = req.user?.plano_limite || 3;
+    const plano_limite = req.user?.plano_limite || 2; // ← free = 2 certificados/mês
 
     if (plano !== 'free' || plano_limite >= 9999) {
       logger.success('Plano ilimitado — passando direto', {

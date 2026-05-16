@@ -139,7 +139,7 @@ function generateJWT(user, authProvider = 'local') {
     nome:           user.nome          || null,
     avatar:         user.avatar        || null,
     plano:          user.plano         || 'free',
-    plano_limite:   user.plano_limite  || 3,
+    plano_limite:   user.plano_limite  || 2, // free = 2 certificados/mês
     cpf_cadastrado: user.cpf_cadastrado || false,
   };
 
@@ -866,7 +866,7 @@ class AuthController {
         ...req.user,
         cpf_cadastrado: true,
         plano:          updatedUser?.plano         || req.user.plano         || 'free',
-        plano_limite:   updatedUser?.plano_limite  || req.user.plano_limite  || 3,
+        plano_limite:   updatedUser?.plano_limite  || req.user.plano_limite  || 2,
       };
 
       const newToken = generateJWT(userForJwt, req.user.auth_provider || 'google');

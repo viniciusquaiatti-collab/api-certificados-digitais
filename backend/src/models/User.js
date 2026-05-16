@@ -344,7 +344,8 @@ async function create({
          telefone, device_fingerprint, ip_cadastro,
          plano, plano_limite, abuse_score, bloqueado, criado_em
        )
-       VALUES ($1,$2,$3,$4,$5,$6,$7,'free',3,0,FALSE,NOW())
+       VALUES ($1,$2,$3,$4,$5,$6,$7,'free',2,0,FALSE,NOW())
+
        RETURNING id, email, nome_completo, plano, plano_limite,
                  abuse_score, bloqueado, criado_em`,
       [

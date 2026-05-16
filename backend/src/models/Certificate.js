@@ -882,8 +882,9 @@ async function countByUserId(usuario_id) {
     logger.result('COUNT_USER', 'ok', {
       usuario_id,
       total,
-      plano_free_limite: 5,
-      dentro_do_limite:  total <= 5 ? '✅ sim' : '⚠️  não — plano excedido',
+      limite_plano_free: 2, // era 5
+      restantes:         Math.max(0, 2 - total), // era 5
+      status:            total >= 2 ? '🔴 LIMITE ATINGIDO' : '🟢 dentro do limite', // era >= 5
     });
 
     return total;
