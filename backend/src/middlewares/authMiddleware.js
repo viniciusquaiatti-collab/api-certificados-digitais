@@ -45,6 +45,16 @@ console.log(chalk.green(chalk.bold('🔐 [authMiddleware] Middleware de autentic
 //   - requestId propagado para correlação de logs
 //   - Verificação de issuer e audience para maior segurança
 //   - Log de segurança separado para tentativas inválidas
+//
+// ✅ v2.1 — PATCH CRÍTICO (zero remoção, apenas acréscimo):
+//   req.user agora propaga TODOS os campos relevantes do JWT:
+//   — plano:          necessário para planLimitMiddleware saber o tipo de plano
+//   — plano_limite:   necessário para planLimitMiddleware bloquear no limite certo
+//   — auth_provider:  necessário para fluxos OAuth (Google vs local)
+//   — cpf_cadastrado: necessário para CompleteProfileModal no frontend
+//
+//   SEM esse patch, planLimitMiddleware recebia req.user?.plano_limite
+//   como undefined e usava o fallback hardcoded — sem bloqueio real.
 // ============================================================
 function authMiddleware(req, res, next) {
   const t0        = Date.now();
@@ -140,20 +150,62 @@ function authMiddleware(req, res, next) {
         }
 
         // ── 4. Token válido — injeta req.user ────────────────
+        //
+        // ✅ v2.1 — PATCH CRÍTICO: propaga plano_limite do JWT decoded
+        //
+        // PROBLEMA ORIGINAL: req.user só tinha { id, email, role }.
+        // planLimitMiddleware usa req.user?.plano_limite para verificar
+        // o limite mensal do plano free. Como plano_limite não era
+        // propagado aqui, o middleware sempre recebia undefined e usava
+        // o fallback hardcoded — por isso usuários podiam emitir ilimitado.
+        //
+        // RAIZ DO BUG 5/2: o JWT carregava plano_limite corretamente
+        // (gerado pelo authController.generateJWT), mas este middleware
+        // não repassava o campo para req.user. Logo o planLimitMiddleware
+        // nunca via o valor real e nunca bloqueava corretamente.
+        //
+        // SOLUÇÃO: propagar todos os campos relevantes do decoded JWT
+        // para req.user, mantendo retrocompatibilidade total (os campos
+        // originais id, email, role permanecem inalterados).
+        //
+        // CAMPOS ADICIONADOS EM v2.1:
+        //   plano:          'free' | 'pro' | 'enterprise'
+        //                   — planLimitMiddleware: verifica se é free
+        //   plano_limite:   número inteiro (ex: 2, 9999)
+        //                   — planLimitMiddleware: usa como teto mensal
+        //   auth_provider:  'local' | 'google'
+        //                   — controllers: distingue fluxo OAuth vs senha
+        //   cpf_cadastrado: boolean
+        //                   — frontend: controla exibição do CompleteProfileModal
         req.user = {
-          id:    decoded.id,
-          email: decoded.email,
-          role:  decoded.role || 'user',
+          id:             decoded.id,
+          email:          decoded.email,
+          role:           decoded.role           || 'user',
+          // ✅ v2.1: campos de plano — propagados do JWT decoded
+          // CRÍTICO para planLimitMiddleware funcionar corretamente
+          plano:          decoded.plano          || 'free',
+          plano_limite:   decoded.plano_limite   || 2,
+          // ✅ v2.1: campos de perfil — propagados do JWT decoded
+          auth_provider:  decoded.auth_provider  || 'local',
+          cpf_cadastrado: decoded.cpf_cadastrado || false,
         };
 
         const totalMs = Date.now() - t0;
         logger.perf('authMiddleware total', totalMs);
         logger.success('Token validado', {
-          userId:    decoded.id,
-          email:     decoded.email,
-          role:      decoded.role,
+          userId:         decoded.id,
+          email:          decoded.email,
+          role:           decoded.role,
+          // ✅ v2.1: loga plano_limite para diagnóstico
+          // Confirma no terminal que o campo chegou corretamente no middleware
+          // e será repassado para planLimitMiddleware
+          plano:          decoded.plano          || 'free',
+          plano_limite:   decoded.plano_limite   || 2,
+          auth_provider:  decoded.auth_provider  || 'local',
+          cpf_cadastrado: decoded.cpf_cadastrado || false,
           requestId,
-          expiresAt: new Date(decoded.exp * 1000).toISOString(),
+          expiresAt:      new Date(decoded.exp * 1000).toISOString(),
+          nota_v21:       'plano_limite propagado — planLimitMiddleware funcionará corretamente',
         });
 
         // ── 5. Próximo middleware / controller ───────────────

@@ -18,6 +18,25 @@
 //     Rate limit por IP é burlável com VPN (troca de IP).
 //     Rate limit por userId usa o ID do banco — não há como
 //     burlar sem comprometer a conta em si.
+//
+// ✅ v2.1 — PATCH CRÍTICO (zero remoção, apenas acréscimo):
+//   planLimitMiddleware adicionado na chain do POST /
+//
+//   BUG ORIGINAL: planLimitMiddleware estava importado desde v2.0
+//   mas NUNCA foi adicionado na chain da rota POST /. Por isso
+//   o limite mensal do plano free nunca era verificado e usuários
+//   podiam emitir certificados ilimitadamente (bug 5/2).
+//
+//   CORREÇÃO: planLimitMiddleware inserido como 4º middleware
+//   na chain do POST /, entre certEmitLimiter e validateSchema.
+//
+//   CHAIN CORRETA v2.1 — POST /api/certificates:
+//     1. routeLogger         → loga a requisição
+//     2. authMiddleware      → valida JWT + popula req.user com plano_limite
+//     3. certEmitLimiter     → rate limit 10/min por userId
+//     4. planLimitMiddleware → ✅ NOVO — verifica limite mensal do plano
+//     5. validateSchema      → valida body
+//     6. controller          → lógica de negócio
 // ============================================================
 
 const express               = require('express');
@@ -27,7 +46,7 @@ const { ipKeyGenerator }    = require('express-rate-limit');
 const CertificateController = require('../controllers/certificateController');
 const authMiddleware        = require('../middlewares/authMiddleware');
 const validateSchema        = require('../middlewares/validateSchema');
-const planLimitMiddleware   = require('../middlewares/planLimitMiddleware'); // v2.0 NOVO 
+const planLimitMiddleware   = require('../middlewares/planLimitMiddleware'); // v2.0 IMPORTADO — v2.1 ATIVADO NA CHAIN
 const { certificateSchema, verifySchema, getByIdSchema } = require('../schemas');
 
 // ============================================================
@@ -66,12 +85,16 @@ const logger = {
 //   Camada 1: Cloudflare DDoS     (volumétrico — externo)
 //   Camada 2: globalLimiter       (100 req/15min por IP — app.js)
 //   Camada 3: authLimiter         (20 req/15min por IP em /auth — app.js)
-//   Camada 4: certEmitLimiter     (10 emissões/min por userId) ← NOVO
-//   Camada 5: verifyLimiter       (30 verificações/min por IP) ← NOVO
+//   Camada 4: certEmitLimiter     (10 emissões/min por userId) ← mantido
+//   Camada 5: planLimitMiddleware (limite mensal do plano)    ← v2.1 ATIVO
+//   Camada 6: verifyLimiter       (30 verificações/min por IP) ← mantido
 //
 // Cada camada captura um tipo diferente de abuso.
 // Nenhuma camada sozinha é suficiente — a segurança vem
 // da combinação de todas elas.
+//
+// ✅ v2.1: camada 5 adicionada — planLimitMiddleware agora está
+// efetivamente na chain e bloqueia emissões acima do plano.
 // ============================================================
 
 // ── certEmitLimiter — Emissão de certificados ─────────────
@@ -186,9 +209,11 @@ const verifyLimiter = rateLimit({
 });
 
 logger.success('CertificateRoutes', 'Rate limiters configurados ✅', {
-  certEmitLimiter: '10 emissões/min por userId (fallback: IP)',
-  verifyLimiter:   '30 verificações/min por IP (anti-enumeração)',
-  camadas:         '4 e 5 de defesa em profundidade ativas',
+  certEmitLimiter:     '10 emissões/min por userId (fallback: IP)',
+  // ✅ v2.1: planLimitMiddleware agora está ATIVO na chain
+  planLimitMiddleware: 'limite mensal do plano free — camada 5 ATIVA ✅',
+  verifyLimiter:       '30 verificações/min por IP (anti-enumeração)',
+  camadas:             '5 e 6 de defesa em profundidade ativas',
 });
 
 // ============================================================
@@ -245,7 +270,7 @@ function routeLogger(routeName) {
 router.get(
   '/verify/:codigo',
   routeLogger('CERT:VERIFY'),
-  verifyLimiter,                         // ← camada 5: anti-enumeração
+  verifyLimiter,                         // ← camada 6: anti-enumeração
   validateSchema(verifySchema),
   CertificateController.verifyCertificate
 );
@@ -260,24 +285,39 @@ router.get(
  * Emite um novo certificado digital.
  * Requer autenticação JWT.
  *
- * ⚠️  CHAIN OBRIGATÓRIA (ordem importa):
- *   1. routeLogger     → loga a requisição
- *   2. authMiddleware  → valida JWT, popula req.user ← DEVE VIR PRIMEIRO
- *   3. certEmitLimiter → rate limit por userId (precisa de req.user)
- *   4. validateSchema  → valida body contra certificateSchema
- *   5. controller      → executa lógica de negócio
+ * ✅ v2.1 — CHAIN CORRIGIDA (planLimitMiddleware adicionado):
  *
- * ⚠️  certEmitLimiter na posição 3 garante:
- *     - req.user populado → keyGenerator usa userId
- *     - Body não parseado desnecessariamente se bloqueado
+ *   PROBLEMA ORIGINAL: a chain abaixo não incluía planLimitMiddleware.
+ *   O middleware estava importado mas nunca chamado — por isso o limite
+ *   mensal nunca bloqueava e usuários podiam emitir ilimitadamente.
+ *
+ *   CHAIN CORRETA v2.1 (ordem importa):
+ *   1. routeLogger         → loga method, path, requestId, IP e timestamp
+ *   2. authMiddleware      → valida JWT + popula req.user com plano_limite
+ *                            (v2.1 do authMiddleware propaga plano_limite)
+ *   3. certEmitLimiter     → rate limit 10/min por userId (anti-spam)
+ *   4. planLimitMiddleware → ✅ ADICIONADO — verifica limite mensal do plano
+ *                            lê req.user.plano_limite, conta emissões do mês,
+ *                            retorna 403 PLAN_LIMIT_REACHED se excedido
+ *   5. validateSchema      → valida body contra certificateSchema (Zod)
+ *   6. controller          → lógica de negócio: hash, PDF, banco, audit
+ *
+ * ⚠️  ORDEM CRÍTICA:
+ *   planLimitMiddleware DEVE vir APÓS authMiddleware
+ *   — precisa de req.user.plano_limite para funcionar
+ *   planLimitMiddleware DEVE vir ANTES do controller
+ *   — bloqueia ANTES de gerar o PDF (economiza Cloudinary + CPU)
+ *   planLimitMiddleware DEVE vir ANTES do validateSchema
+ *   — evita parsing do body para requests que serão bloqueados de qualquer forma
  */
 router.post(
   '/',
   routeLogger('CERT:CREATE'),
-  authMiddleware,                        // ← 1º: valida JWT
-  certEmitLimiter,                       // ← 2º: rate limit por userId
-  validateSchema(certificateSchema),     // ← 3º: valida body
-  CertificateController.createCertificate
+  authMiddleware,                        // ← 1º: valida JWT + popula req.user com plano_limite
+  certEmitLimiter,                       // ← 2º: rate limit por userId (10 emissões/min)
+  planLimitMiddleware,                   // ← 3º: ✅ v2.1 ADICIONADO — limite mensal do plano
+  validateSchema(certificateSchema),     // ← 4º: valida body (Zod schema)
+  CertificateController.createCertificate // ← 5º: lógica de negócio
 );
 
 /**
@@ -319,6 +359,14 @@ logger.route('GET',  '/api/certificates/verify/:codigo', 'limited');
 logger.route('POST', '/api/certificates',                'protected');
 logger.route('GET',  '/api/certificates',                'protected');
 logger.route('GET',  '/api/certificates/:id',            'protected');
+// ✅ v2.1: confirmação de que planLimitMiddleware está ATIVO na chain
+logger.success('CertificateRoutes', '✅ planLimitMiddleware ATIVO na rota POST /', {
+  posicao:  '3º na chain (após auth + rateLimit, antes de validateSchema)',
+  bloqueia: 'plano free → 2 certificados/mês (configurado em planLimitMiddleware.js)',
+  retorna:  '403 PLAN_LIMIT_REACHED quando limite atingido',
+  depende:  'authMiddleware v2.1 — req.user.plano_limite deve estar populado',
+  nota:     'sem authMiddleware v2.1, plano_limite cai no fallback do planLimitMiddleware',
+});
 logger.sep();
 
 module.exports = router;
