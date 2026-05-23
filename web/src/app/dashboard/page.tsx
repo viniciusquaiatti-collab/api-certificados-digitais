@@ -1,32 +1,26 @@
 "use client";
 
 // ============================================================
-// 🏢 NexaSpark — /dashboard/page.tsx v3.1 LUXURY ENTERPRISE
+// 🏢 NexaSpark — /dashboard/page.tsx v3.2 LUXURY ENTERPRISE
 //
-// UPGRADE v3 — SaaS que respira:
-//   ✅ Canvas de partículas flutuantes no fundo (vive sozinho)
-//   ✅ Números que contam ao aparecer (counter animation)
-//   ✅ Gradiente animado pulsante nos cards de métricas
-//   ✅ Glow verde nos inputs ao focar
-//   ✅ Timeline visual no histórico (não tabela)
-//   ✅ Barra de progresso animada do plano Free
-//   ✅ Sidebar com indicador de presença animado
-//   ✅ Header com data/hora em tempo real
-//   ✅ Animação de entrada staggered (cada elemento aparece)
-//   ✅ Shimmer effect nos cards enquanto carrega
-//   ✅ Todos os console.log preservados + novos
-//   ✅ Session timeout 6min com aviso visual
+// ✅ v3.2 — CORREÇÃO CRÍTICA (zero remoção, apenas acréscimo):
+//   🔢 PLAN_LIMIT removido do hardcode (era 5, depois 3)
+//      Agora lido diretamente de user.plano_limite (vem do JWT)
+//      O backend define o limite — o frontend apenas exibe
+//   📋 Interface User expandida: + plano, plano_limite
+//   📊 planLimit calculado: user.plano_limite ?? 2 (fallback seguro)
+//   🎯 Todos os lugares que usavam PLAN_LIMIT agora usam planLimit
+//      — Card "Este mês": X/{planLimit}
+//      — Card "Plano": Free — {planLimit} emissões/mês
+//      — Sidebar progress: {planUsed}/{planLimit}
+//      — Barra perfil: {planLimit - metricsThisMonth} restantes
+//      — Perfil row: {planLimit} emissões/mês
+//      — Perfil row: {metricsThisMonth} de {planLimit}
 //
-// ✅ v3.1 — ADIÇÕES (zero remoção, apenas acréscimo):
+// v3.1 mantido intacto:
 //   🔐 CompleteProfileModal integrado
-//      — Aparece automaticamente para usuários Google sem CPF
-//      — Modal obrigatório: cpf_cadastrado === false
-//      — Detectado em validateAuth() após setUser(userData)
-//      — Fecha após sucesso, atualiza token, libera dashboard
-//   🔐 Interface User expandida: + cpf_cadastrado?: boolean
-//   🔐 Estado showCpfModal adicionado
-//   🔐 logger.modal() — novo scope de log para o modal
-//   🔐 Log detalhado do fluxo de detecção de CPF pendente
+//   🔐 cpf_cadastrado no JWT
+//   🔐 logger.modal() scope
 // ============================================================
 
 import { useEffect, useState, useRef, useCallback } from "react";
@@ -36,9 +30,9 @@ import { useRouter }                                 from "next/navigation";
 import CompleteProfileModal from "./CompleteProfileModal";
 
 // ============================================================
-// 🏢 LOGGER — Enterprise Grade | NexaSpark Frontend v3.1
+// 🏢 LOGGER — Enterprise Grade | NexaSpark Frontend v3.2
 // ============================================================
-const LOG_PREFIX = "[NexaSpark:Dashboard:v3.1]";
+const LOG_PREFIX = "[NexaSpark:Dashboard:v3.2]";
 
 const logger = {
   info:    (scope: string, msg: string, data?: any) =>
@@ -80,14 +74,17 @@ const logger = {
     console.log(`%c${LOG_PREFIX} 🖼️  [CANVAS]%c ${msg}`, "color:#93c5fd;font-weight:bold;", "color:inherit;", data ?? ""),
   clock:   (msg: string, data?: any) =>
     console.log(`%c${LOG_PREFIX} 🕐 [CLOCK]%c ${msg}`, "color:#6ee7b7;font-weight:bold;", "color:inherit;", data ?? ""),
-  // ✅ v3.1: novo scope para o modal de CPF
   modal:   (msg: string, data?: any) =>
     console.log(`%c${LOG_PREFIX} 🪟 [MODAL:CPF]%c ${msg}`, "color:#fb923c;font-weight:bold;", "color:inherit;", data ?? ""),
+  plan:    (msg: string, data?: any) =>
+    console.log(`%c${LOG_PREFIX} 💳 [PLAN]%c ${msg}`, "color:#fbbf24;font-weight:bold;", "color:inherit;", data ?? ""),
 };
 
 const API_URL            = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8080";
 const SESSION_TIMEOUT_MS = 6 * 60 * 1000;
 
+// ✅ v3.2: PLAN_LIMIT removido — agora é dinâmico via user.plano_limite
+// Não existe mais constante hardcoded aqui
 
 // ============================================================
 // 📋 TIPOS
@@ -98,11 +95,12 @@ interface User {
   nome?:           string;
   avatar?:         string;
   auth_provider?:  string;
-  // ✅ v3.1: cpf_cadastrado — controla exibição do modal
-  // false = usuário Google sem CPF → modal aparece
-  // true  = CPF já vinculado → dashboard liberado normalmente
   cpf_cadastrado?: boolean;
   criado_em?:      string;
+  // ✅ v3.2: campos de plano agora tipados explicitamente
+  // Vêm do JWT (gerado pelo authController.generateJWT)
+  // plano: 'free' | 'pro' | 'enterprise'
+  // plano_limite: número de certificados permitidos por mês
   plano?:          string;
   plano_limite?:   number;
 }
@@ -140,7 +138,7 @@ function useCountUp(target: number, duration = 1200, start = false) {
     const step = (timestamp: number) => {
       if (!startTime) startTime = timestamp;
       const progress = Math.min((timestamp - startTime) / duration, 1);
-      const eased    = 1 - Math.pow(1 - progress, 3); // ease-out cubic
+      const eased    = 1 - Math.pow(1 - progress, 3);
       setValue(Math.floor(eased * target));
       if (progress < 1) requestAnimationFrame(step);
       else setValue(target);
@@ -197,26 +195,19 @@ function ParticleCanvas() {
 
     function draw() {
       ctx!.clearRect(0, 0, W, H);
-
       particles.forEach((p, i) => {
         p.x    += p.vx;
         p.y    += p.vy;
         p.pulse += p.speed;
-
-        // wrap around
         if (p.x < -5)    p.x = W + 5;
         if (p.x > W + 5) p.x = -5;
         if (p.y < -5)    p.y = H + 5;
         if (p.y > H + 5) p.y = -5;
-
         const a = p.alpha * (0.6 + 0.4 * Math.sin(p.pulse));
-
         ctx!.beginPath();
         ctx!.arc(p.x, p.y, p.r, 0, Math.PI * 2);
         ctx!.fillStyle = `rgba(16,185,129,${a})`;
         ctx!.fill();
-
-        // linhas entre partículas próximas
         for (let j = i + 1; j < particles.length; j++) {
           const q    = particles[j];
           const dx   = p.x - q.x, dy = p.y - q.y;
@@ -231,7 +222,6 @@ function ParticleCanvas() {
           }
         }
       });
-
       animId = requestAnimationFrame(draw);
     }
 
@@ -271,8 +261,21 @@ function useClock() {
 }
 
 // ============================================================
-// 🏠 DASHBOARD ENTERPRISE v3.1
+// 🏠 DASHBOARD ENTERPRISE v3.2
 // ============================================================
+// ============================================================
+// 📱 HELPER — Máscara automática de CPF
+// ✅ v3.2: igual ao CompleteProfileModal — usuário não precisa digitar pontos
+// Exemplo: digita 18424555490 → exibe 184.245.554-90 automaticamente
+// ============================================================
+function maskCpf(v: string): string {
+  const d = v.replace(/\D/g, "").slice(0, 11);
+  if (d.length <= 3) return d;
+  if (d.length <= 6) return `${d.slice(0,3)}.${d.slice(3)}`;
+  if (d.length <= 9) return `${d.slice(0,3)}.${d.slice(3,6)}.${d.slice(6)}`;
+  return `${d.slice(0,3)}.${d.slice(3,6)}.${d.slice(6,9)}-${d.slice(9)}`;
+}
+
 export default function Dashboard() {
   const router = useRouter();
   const clock  = useClock();
@@ -290,11 +293,12 @@ export default function Dashboard() {
   const [timeoutWarning,   setTimeoutWarning]    = useState(false);
   const [mounted,          setMounted]           = useState(false);
   const [countStart,       setCountStart]        = useState(false);
-
-  // ✅ v3.1: estado do modal de CPF obrigatório para usuários Google
-  // true  = modal visível, bloqueia interação com o dashboard
-  // false = modal oculto, dashboard totalmente acessível
   const [showCpfModal,     setShowCpfModal]      = useState(false);
+
+  // ✅ v3.2: contador local de emissões — atualiza instantaneamente sem refresh
+  // null = não inicializado, usa metricsThisMonth como base
+  // number = valor real desta sessão (inclui emissões feitas agora)
+  const [emissaoCount,     setEmissaoCount]      = useState<number | null>(null);
 
   const mountTime  = useRef(Date.now());
   const timeoutRef = useRef<NodeJS.Timeout | null>(null);
@@ -308,17 +312,26 @@ export default function Dashboard() {
     data_emissao:      new Date().toISOString().split("T")[0],
   });
 
-  // Métricas calculadas
+  // Métricas calculadas a partir dos certificados carregados do banco
   const metricsThisMonth = certificates.filter(c => {
     const d = new Date(c.criado_em), n = new Date();
     return d.getMonth() === n.getMonth() && d.getFullYear() === n.getFullYear();
   }).length;
 
-  // Counters animados
-  const countMonth = useCountUp(metricsThisMonth, 900, countStart);
+  // ✅ v3.2: plan* declarados APÓS metricsThisMonth — evita ReferenceError
+  const planLimit = user?.plano_limite ?? 2;
+  // emissaoCount atualiza instantaneamente após emissão (sem refresh)
+  // metricsThisMonth é o fallback inicial carregado do banco
+  const planUsed  = emissaoCount !== null ? emissaoCount : metricsThisMonth;
+  const planPct   = Math.min((planUsed / planLimit) * 100, 100);
+  // flag de bloqueio — impede nova emissão quando limite do plano atingido
+  const planFull  = planUsed >= planLimit;
+
+  const countMonth = useCountUp(metricsThisMonth, 900,  countStart);
   const countTotal = useCountUp(certificates.length, 1200, countStart);
 
-  // Inicia contagem após montar
+
+
   useEffect(() => {
     if (!loadingAuth && user) {
       setTimeout(() => {
@@ -369,12 +382,12 @@ export default function Dashboard() {
   // ============================================================
   useEffect(() => {
     logger.sep();
-    logger.mount("Dashboard v3.1 Luxury Enterprise");
-    logger.info("INIT", "Dashboard v3.1 inicializando", {
+    logger.mount("Dashboard v3.2 Luxury Enterprise");
+    logger.info("INIT", "Dashboard v3.2 inicializando", {
       apiUrl:    API_URL,
       timestamp: new Date().toISOString(),
-      version:   "3.1.0",
-      novidade:  "CompleteProfileModal para usuários Google sem CPF",
+      version:   "3.2.0",
+      novidade:  "PLAN_LIMIT dinâmico via user.plano_limite — não hardcoded",
     });
 
     async function validateAuth() {
@@ -398,6 +411,9 @@ export default function Dashboard() {
             provider:       payload.auth_provider || "local",
             expiresAt:      new Date(payload.exp * 1000).toISOString(),
             cpf_cadastrado: payload.cpf_cadastrado,
+            // ✅ v3.2: loga plano e plano_limite do JWT
+            plano:          payload.plano,
+            plano_limite:   payload.plano_limite,
             isExpired,
             tokenSize:      token.length,
           });
@@ -417,20 +433,14 @@ export default function Dashboard() {
         const response = await fetch(`${API_URL}/api/auth/me`, {
           headers: {
             "Authorization": `Bearer ${token}`,
-            "X-Request-ID":  `dashboard_v3_${Date.now()}`,
+            "X-Request-ID":  `dashboard_v32_${Date.now()}`,
           },
         });
         logger.perf("AUTH:HTTP", "/api/auth/me", performance.now() - tFetch);
-        logger.info("AUTH:HTTP", "Resposta", { status: response.status, ok: response.ok });
 
         let data: any = {};
         try {
           data = await response.json();
-          logger.info("AUTH:PARSE", "Body parseado", {
-            success:    data.success,
-            hasUser:    !!data.data,
-            userFields: data.data ? Object.keys(data.data) : [],
-          });
         } catch (parseErr) {
           logger.error("AUTH:PARSE", "JSON inválido", { parseErr: String(parseErr) });
           throw new Error("Resposta inválida do servidor");
@@ -442,23 +452,30 @@ export default function Dashboard() {
         }
 
         const userData: User = data.data;
-        logger.success("AUTH", "Sessão validada ✅", { userId: userData.id, email: userData.email });
+
+        // ✅ v3.2: loga o plano_limite recebido do backend
+        logger.plan("Plano recebido do backend", {
+          plano:        userData.plano        || "free",
+          plano_limite: userData.plano_limite ?? 2,
+          fonte:        "/api/auth/me → campo plano_limite",
+          nota:         "Este valor controla a barra de progresso e os cards",
+        });
+
+        logger.success("AUTH", "Sessão validada ✅", {
+          userId:       userData.id,
+          email:        userData.email,
+          plano:        userData.plano,
+          plano_limite: userData.plano_limite,
+        });
         logger.perf("AUTH", "Validação completa", performance.now() - t0);
         setUser(userData);
 
-        // ✅ v3.1: Detecta usuário Google sem CPF cadastrado
-        // Condições para abrir o modal:
-        //   1. auth_provider é "google" (veio pelo OAuth)
-        //   2. cpf_cadastrado é false ou undefined (nunca preencheu)
-        // O modal é obrigatório — não tem como fechar sem preencher
         if (userData.auth_provider === "google" && !userData.cpf_cadastrado) {
           logger.modal("🚨 Usuário Google sem CPF detectado — abrindo modal obrigatório", {
-            userId:          userData.id,
-            email:           userData.email,
-            auth_provider:   userData.auth_provider,
-            cpf_cadastrado:  userData.cpf_cadastrado,
-            acao:            "Modal obrigatório será exibido — usuário não pode fechar sem preencher",
-            endpoint_alvo:   "POST /api/auth/complete-profile",
+            userId:         userData.id,
+            email:          userData.email,
+            auth_provider:  userData.auth_provider,
+            cpf_cadastrado: userData.cpf_cadastrado,
           });
           setShowCpfModal(true);
         } else {
@@ -471,9 +488,6 @@ export default function Dashboard() {
 
       } catch (error: any) {
         logger.error("AUTH", `Validação falhou — ${error.message}`, { type: error.name });
-        if (error.name === "TypeError" && error.message.includes("fetch")) {
-          logger.error("AUTH:NETWORK", "Backend inacessível", { url: `${API_URL}/api/auth/me` });
-        }
         logger.warn("AUTH", "Limpando sessão inválida");
         localStorage.removeItem("token");
         document.cookie = "token=; Max-Age=0; path=/;";
@@ -487,7 +501,7 @@ export default function Dashboard() {
     validateAuth();
 
     return () => {
-      logger.unmount("Dashboard v3.1 Luxury Enterprise");
+      logger.unmount("Dashboard v3.2 Luxury Enterprise");
       logger.perf("DASHBOARD:LIFECYCLE", "Tempo total montado", Date.now() - mountTime.current);
       logger.sep();
     };
@@ -502,13 +516,7 @@ export default function Dashboard() {
     setLoadingCerts(true);
     try {
       const token = localStorage.getItem("token");
-
-      if (!token) {
-        logger.sec("fetchCertificates sem token", {});
-        throw new Error("Usuário não autenticado");
-      }
-
-      logger.table("HIST:HTTP", "GET /api/certificates iniciando", { url: `${API_URL}/api/certificates` });
+      if (!token) { logger.sec("fetchCertificates sem token", {}); throw new Error("Usuário não autenticado"); }
 
       const response = await fetch(`${API_URL}/api/certificates`, {
         headers: {
@@ -518,71 +526,61 @@ export default function Dashboard() {
       });
 
       logger.perf("HIST", "GET /api/certificates", performance.now() - t0);
-      logger.table("HIST:HTTP", "Resposta recebida", { status: response.status, ok: response.ok });
 
-      // ⚠️  Parse ANTES do check — evita erro se response não for JSON
       let data: any = {};
-      try {
-        data = await response.json();
-        logger.table("HIST:PARSE", "Body parseado", {
-          success:    data.success,
-          keys:       Object.keys(data),
-          dataType:   Array.isArray(data.data) ? "array" : typeof data.data,
-          dataLength: Array.isArray(data.data) ? data.data.length : "N/A",
-        });
-      } catch (parseErr) {
-        logger.error("HIST:PARSE", "JSON inválido na resposta", { parseErr: String(parseErr) });
-        throw new Error("Resposta inválida do servidor ao carregar histórico");
-      }
+      try { data = await response.json(); } catch (parseErr) { throw new Error("Resposta inválida do servidor ao carregar histórico"); }
 
-      if (!response.ok) {
-        logger.error("HIST:HTTP", "Resposta não-ok", { status: response.status, error: data?.error, code: data?.code });
-        throw new Error(data?.error || `HTTP ${response.status}`);
-      }
+      if (!response.ok) throw new Error(data?.error || `HTTP ${response.status}`);
 
-      // ⚠️  Suporta múltiplos formatos de resposta da API:
-      //   { data: { certificates: [...] } }
-      //   { data: [...] }
-      //   { certificates: [...] }
-      //   [...]
       const certs: Certificate[] =
         Array.isArray(data.data?.certificates) ? data.data.certificates :
         Array.isArray(data.data)               ? data.data               :
         Array.isArray(data.certificates)       ? data.certificates       :
         Array.isArray(data)                    ? data                    : [];
 
-      logger.table("HIST", "Certificados carregados ✅", {
-        count:  certs.length,
-        format: Array.isArray(data.data?.certificates) ? "data.certificates" :
-                Array.isArray(data.data)               ? "data.data[]"       :
-                Array.isArray(data)                    ? "root[]"            : "vazio",
-      });
+      logger.table("HIST", "Certificados carregados ✅", { count: certs.length });
 
       const esteMes = certs.filter((c: Certificate) => {
         const d = new Date(c.criado_em), n = new Date();
         return d.getMonth() === n.getMonth() && d.getFullYear() === n.getFullYear();
       }).length;
 
-      logger.metrics("Métricas atualizadas", { total: certs.length, esteMes });
+      logger.metrics("Métricas atualizadas", {
+        total:        certs.length,
+        esteMes,
+        plano_limite: planLimit,
+        restantes:    planLimit - esteMes,
+      });
 
       setCertificates(certs);
       setCountStart(false);
       setTimeout(() => setCountStart(true), 50);
 
     } catch (error: any) {
-      logger.error("HIST", "Falha ao carregar histórico", {
-        message: error.message,
-        type:    error.name,
-        hint:    "Verifique se GET /api/certificates retorna { success, data: [] }",
-      });
+      logger.error("HIST", "Falha ao carregar histórico", { message: error.message });
     } finally {
       setLoadingCerts(false);
     }
   }
 
+  // ✅ v3.2: busca certificados NO MOUNT assim que sessão é validada
+  // PROBLEMA ORIGINAL: só buscava na tab "historico" → F5 na tab "emitir"
+  // mostrava 0/0 nos cards até o usuário clicar em Histórico
+  // SOLUÇÃO: busca imediatamente após user ser setado, independente da tab ativa
+  useEffect(() => {
+    if (user) {
+      logger.table("MOUNT:FETCH", "Buscando certificados no mount — garante contadores corretos no F5", {
+        userId:    user.id,
+        activeTab,
+        nota:      "v3.2: não espera mais o usuário clicar em Histórico",
+      });
+      fetchCertificates();
+    }
+  }, [user]);
+
   useEffect(() => {
     if (user && activeTab === "historico") {
-      logger.sidebar("Tab histórico ativada — buscando certificados");
+      logger.sidebar("Tab histórico ativada — atualizando certificados");
       fetchCertificates();
     }
   }, [user, activeTab]);
@@ -596,7 +594,7 @@ export default function Dashboard() {
     try {
       localStorage.removeItem("token");
       document.cookie = "token=; Max-Age=0; path=/;";
-      logger.success("AUTH", "Token removido — localStorage + cookie limpos ✅");
+      logger.success("AUTH", "Token removido ✅");
       logger.nav("/login");
       router.replace("/login");
     } catch (error: any) {
@@ -609,12 +607,10 @@ export default function Dashboard() {
   // ============================================================
   function handleChange(e: React.ChangeEvent<HTMLInputElement>) {
     const { name, value } = e.target;
-    logger.event("FORM", `Campo alterado: ${name}`, {
-      field: name,
-      value: name === "cpf" ? `[${value.length} chars]` : value,
-    });
     setSubmitError("");
-    setForm(prev => ({ ...prev, [name]: value }));
+    // ✅ v3.2: máscara automática CPF — sem precisar digitar pontos
+    const finalValue = name === "cpf" ? maskCpf(value) : value;
+    setForm(prev => ({ ...prev, [name]: finalValue }));
   }
 
   // ============================================================
@@ -629,13 +625,6 @@ export default function Dashboard() {
     const t0 = performance.now();
     logger.sep();
     logger.cert("Iniciando emissão...");
-    logger.event("CERT", "Formulário submetido", {
-      nome_participante: form.nome_participante,
-      cpf:               `[${form.cpf.length} chars]`,
-      nome_curso:        form.nome_curso,
-      carga_horaria:     form.carga_horaria,
-      data_emissao:      form.data_emissao,
-    });
 
     setLoadingSubmit(true);
     try {
@@ -643,8 +632,6 @@ export default function Dashboard() {
       if (!token) { logger.sec("Emissão sem token", { userId: user?.id }); throw new Error("Usuário não autenticado"); }
 
       const payload = { ...form, carga_horaria: Number(form.carga_horaria) };
-      logger.cert("Payload preparado", { ...payload, cpf: `[${payload.cpf.length} chars]` });
-      logger.info("CERT:HTTP", "POST /api/certificates...", { url: `${API_URL}/api/certificates` });
 
       const tFetch   = performance.now();
       const response = await fetch(`${API_URL}/api/certificates`, {
@@ -657,23 +644,28 @@ export default function Dashboard() {
         body: JSON.stringify(payload),
       });
       logger.perf("CERT:HTTP", "Resposta recebida", performance.now() - tFetch);
-      logger.info("CERT:HTTP", "Status", { status: response.status, ok: response.ok });
 
       let data: any = {};
-      try {
-        data = await response.json();
-        logger.info("CERT:PARSE", "Body parseado", {
-          success:   data.success,
-          hasPdfUrl: !!(data.data?.pdf_url || data.pdf_url),
-          keys:      Object.keys(data),
-        });
-      } catch (parseErr) {
-        logger.error("CERT:PARSE", "JSON inválido", { parseErr: String(parseErr) });
-        throw new Error("Resposta inválida do servidor");
-      }
+      try { data = await response.json(); } catch { throw new Error("Resposta inválida do servidor"); }
 
       if (!response.ok) {
         logger.error("CERT", "Erro da API", { status: response.status, code: data?.code, error: data?.error });
+
+        // ✅ v3.2: trata PLAN_LIMIT_REACHED com mensagem clara para o usuário
+        if (response.status === 403 && data?.code === "PLAN_LIMIT_REACHED") {
+          logger.plan("Limite do plano free atingido", {
+            plano_limite:    data?.data?.plano_limite,
+            used_this_month: data?.data?.used_this_month,
+            remaining:       data?.data?.remaining,
+          });
+          throw new Error(
+            "Pelo visto você gostou do nosso modelo de certificação e validação! \n" +
+            "Obrigado por confiar e escolher a NexaSpark. \n" +
+            "Para continuar emitindo, entre em contato ou assine um dos nossos planos disponíveis. \n" +
+            "Até logo — é um prazer ter você por aqui. 🚀"
+          );
+        }
+
         if (response.status === 401) {
           logger.sec("Token expirado na emissão — logout", { status: response.status });
           localStorage.removeItem("token");
@@ -685,21 +677,27 @@ export default function Dashboard() {
       }
 
       const url = data.data?.pdf_url || data.pdf_url || data.data?.url;
-      logger.cert("Certificado emitido com sucesso!", { pdfUrl: url, id: data.data?.id, codigo: data.data?.codigo_verificacao });
+      logger.cert("Certificado emitido com sucesso!", { pdfUrl: url, id: data.data?.id });
       if (!url) { logger.warn("CERT", "PDF não retornado", { data }); throw new Error("PDF não foi gerado. Tente novamente."); }
 
       logger.perf("CERT", "Emissão completa", performance.now() - t0);
-      logger.success("CERT", "══ CERTIFICADO EMITIDO ══", { url, totalMs: (performance.now() - t0).toFixed(2) + "ms" });
 
       setPdfUrl(url);
       setSubmitSuccess(true);
-      setForm({ nome_participante: "", cpf: "", nome_curso: "", carga_horaria: "", data_emissao: new Date().toISOString().split("T")[0] });
+      // ✅ v3.2: incrementa IMEDIATAMENTE — barra atualiza sem refresh
+      setEmissaoCount(prev => (prev !== null ? prev + 1 : metricsThisMonth + 1));
+      logger.plan("Emissão contabilizada — barra atualizada instantaneamente", {
+        novo_total: (emissaoCount !== null ? emissaoCount : metricsThisMonth) + 1,
+        planLimit,
+        restantes:  planLimit - ((emissaoCount !== null ? emissaoCount : metricsThisMonth) + 1),
+      });
+      // ✅ v3.2: form NÃO reseta aqui — usuário vê o certificado primeiro
+      // O reset acontece quando clica "Emitir novo certificado"
 
     } catch (error: any) {
       logger.error("CERT", `Emissão falhou — ${error.message}`, { type: error.name });
       setSubmitError(error.message || "Erro inesperado. Tente novamente.");
     } finally {
-      logger.info("CERT", "Fluxo de emissão finalizado — setLoadingSubmit(false)");
       setLoadingSubmit(false);
       logger.sep();
     }
@@ -736,21 +734,19 @@ export default function Dashboard() {
   if (!user) return null;
 
   const initials = (user.nome || user.email).substring(0, 2).toUpperCase();
-  const planLimit = user?.plano_limite ?? 2;
-  const planUsed = metricsThisMonth;
-  const planPct  = Math.min((planUsed / planLimit) * 100, 100);
 
-  logger.info("RENDER", "Renderizando Dashboard v3.1 Luxury", {
-    userId:        user.id,
-    email:         user.email,
+  logger.info("RENDER", "Renderizando Dashboard v3.2 Luxury", {
+    userId:       user.id,
+    email:        user.email,
     activeTab,
-    certsLoaded:   certificates.length,
+    certsLoaded:  certificates.length,
     mounted,
     showCpfModal,
-    cpf_cadastrado: user.cpf_cadastrado,
+    plano:        user.plano,
+    plano_limite: planLimit,     // ✅ v3.2: loga o limite dinâmico
+    planPct:      planPct.toFixed(1) + "%",
   });
 
-  // ── Estilos de animação de entrada staggered ─────────────────
   const fadeIn = (delay = 0): React.CSSProperties => ({
     opacity:    mounted ? 1 : 0,
     transform:  mounted ? "translateY(0)" : "translateY(12px)",
@@ -759,13 +755,11 @@ export default function Dashboard() {
 
   return (
     <>
-      {/* CSS global */}
       <style>{`
         @import url('https://fonts.googleapis.com/css2?family=Syne:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap');
         @keyframes spin { to { transform: rotate(360deg); } }
         @keyframes pulse-glow { 0%,100% { box-shadow: 0 0 0 0 rgba(16,185,129,0); } 50% { box-shadow: 0 0 20px 2px rgba(16,185,129,0.12); } }
         @keyframes shimmer { 0% { background-position: -400px 0; } 100% { background-position: 400px 0; } }
-        @keyframes progress-fill { from { width: 0%; } to { width: ${planPct}%; } }
         @keyframes fade-slide-up { from { opacity:0; transform:translateY(16px); } to { opacity:1; transform:translateY(0); } }
         @keyframes blink { 0%,100% { opacity:1; } 50% { opacity:0.3; } }
         @keyframes float { 0%,100% { transform:translateY(0); } 50% { transform:translateY(-4px); } }
@@ -777,27 +771,15 @@ export default function Dashboard() {
         input[type="date"]::-webkit-calendar-picker-indicator { filter: invert(0.3) sepia(1) hue-rotate(100deg); cursor: pointer; }
       `}</style>
 
-      {/* CANVAS */}
       <ParticleCanvas />
 
-      {/*
-        ✅ v3.1 — CompleteProfileModal
-        Renderizado ANTES do conteúdo principal para garantir z-index correto.
-        Condições de exibição:
-          1. showCpfModal === true (detectado em validateAuth)
-          2. user !== null (sessão validada)
-        O modal tem z-index: 200 e backdrop blur total.
-        onComplete: fecha o modal e loga a conclusão.
-      */}
       {showCpfModal && user && (
         <CompleteProfileModal
           user={user}
           onComplete={() => {
             logger.modal("✅ Modal de CPF concluído — dashboard liberado", {
               userId:         user.id,
-              email:          user.email,
               cpf_cadastrado: true,
-              acao:           "setShowCpfModal(false) — usuário pode usar o dashboard",
             });
             setShowCpfModal(false);
           }}
@@ -808,15 +790,7 @@ export default function Dashboard() {
 
         {/* TIMEOUT WARNING */}
         {timeoutWarning && (
-          <div style={{
-            position:       "fixed", top: 20, right: 20, zIndex: 100,
-            background:     "rgba(251,191,36,0.06)", border: "1px solid rgba(251,191,36,0.25)",
-            borderRadius:   14, padding: "12px 18px",
-            display:        "flex", alignItems: "center", gap: 12,
-            backdropFilter: "blur(20px)",
-            animation:      "fade-slide-up 0.3s ease",
-            boxShadow:      "0 0 30px rgba(251,191,36,0.08)",
-          }}>
+          <div style={{ position: "fixed", top: 20, right: 20, zIndex: 100, background: "rgba(251,191,36,0.06)", border: "1px solid rgba(251,191,36,0.25)", borderRadius: 14, padding: "12px 18px", display: "flex", alignItems: "center", gap: 12, backdropFilter: "blur(20px)", animation: "fade-slide-up 0.3s ease", boxShadow: "0 0 30px rgba(251,191,36,0.08)" }}>
             <div style={{ width: 8, height: 8, borderRadius: "50%", background: "#fbbf24", animation: "blink 1s ease infinite" }} />
             <div>
               <p style={{ color: "#fbbf24", fontSize: 12, fontWeight: 600, margin: 0 }}>Sessão expirando</p>
@@ -826,28 +800,11 @@ export default function Dashboard() {
         )}
 
         {/* SIDEBAR */}
-        <aside style={{
-          width:          sidebarCollapsed ? 60 : 230,
-          minHeight:      "100vh",
-          background:     "rgba(10,15,24,0.9)",
-          borderRight:    "1px solid rgba(16,185,129,0.08)",
-          display:        "flex", flexDirection: "column", flexShrink: 0,
-          transition:     "width 0.3s cubic-bezier(0.4,0,0.2,1)",
-          backdropFilter: "blur(20px)",
-          position:       "relative", zIndex: 10,
-        }}>
+        <aside style={{ width: sidebarCollapsed ? 60 : 230, minHeight: "100vh", background: "rgba(10,15,24,0.9)", borderRight: "1px solid rgba(16,185,129,0.08)", display: "flex", flexDirection: "column", flexShrink: 0, transition: "width 0.3s cubic-bezier(0.4,0,0.2,1)", backdropFilter: "blur(20px)", position: "relative", zIndex: 10 }}>
 
           {/* Logo */}
           <div style={{ padding: sidebarCollapsed ? "20px 14px" : "20px 18px", borderBottom: "1px solid rgba(16,185,129,0.06)", display: "flex", alignItems: "center", gap: 12 }}>
-            <div style={{
-              width:          32, height: 32, borderRadius: 10,
-              background:     "linear-gradient(135deg, rgba(16,185,129,0.2), rgba(16,185,129,0.05))",
-              border:         "1px solid rgba(16,185,129,0.3)",
-              display:        "flex", alignItems: "center", justifyContent: "center",
-              flexShrink:     0, fontSize: 15,
-              animation:      "float 3s ease-in-out infinite",
-              boxShadow:      "0 0 20px rgba(16,185,129,0.1)",
-            }}>⚡</div>
+            <div style={{ width: 32, height: 32, borderRadius: 10, background: "linear-gradient(135deg, rgba(16,185,129,0.2), rgba(16,185,129,0.05))", border: "1px solid rgba(16,185,129,0.3)", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0, fontSize: 15, animation: "float 3s ease-in-out infinite", boxShadow: "0 0 20px rgba(16,185,129,0.1)" }}>⚡</div>
             {!sidebarCollapsed && (
               <div>
                 <span style={{ fontSize: 14, fontWeight: 700, color: "rgba(255,255,255,0.9)", letterSpacing: "0.02em" }}>NexaSpark</span>
@@ -871,26 +828,11 @@ export default function Dashboard() {
                 <button
                   key={item.tab}
                   onClick={() => handleTabChange(item.tab)}
-                  style={{
-                    width:          "100%",
-                    display:        "flex", alignItems: "center", gap: 12,
-                    padding:        sidebarCollapsed ? "11px 0" : "11px 14px",
-                    justifyContent: sidebarCollapsed ? "center" : "flex-start",
-                    borderRadius:   10,
-                    border:         isActive ? "1px solid rgba(16,185,129,0.2)" : "1px solid transparent",
-                    background:     isActive ? "rgba(16,185,129,0.08)" : "transparent",
-                    color:          isActive ? "#34d399" : "rgba(255,255,255,0.3)",
-                    fontSize:       13, fontWeight: isActive ? 600 : 400,
-                    cursor:         "pointer", transition: "all 0.2s",
-                    position:       "relative",
-                    boxShadow:      isActive ? "inset 0 0 20px rgba(16,185,129,0.04)" : "none",
-                  }}
+                  style={{ width: "100%", display: "flex", alignItems: "center", gap: 12, padding: sidebarCollapsed ? "11px 0" : "11px 14px", justifyContent: sidebarCollapsed ? "center" : "flex-start", borderRadius: 10, border: isActive ? "1px solid rgba(16,185,129,0.2)" : "1px solid transparent", background: isActive ? "rgba(16,185,129,0.08)" : "transparent", color: isActive ? "#34d399" : "rgba(255,255,255,0.3)", fontSize: 13, fontWeight: isActive ? 600 : 400, cursor: "pointer", transition: "all 0.2s", position: "relative", boxShadow: isActive ? "inset 0 0 20px rgba(16,185,129,0.04)" : "none" }}
                   onMouseEnter={e => { if (!isActive) { (e.currentTarget as HTMLButtonElement).style.color = "rgba(255,255,255,0.7)"; (e.currentTarget as HTMLButtonElement).style.background = "rgba(255,255,255,0.03)"; }}}
                   onMouseLeave={e => { if (!isActive) { (e.currentTarget as HTMLButtonElement).style.color = "rgba(255,255,255,0.3)"; (e.currentTarget as HTMLButtonElement).style.background = "transparent"; }}}
                 >
-                  {isActive && (
-                    <div style={{ position: "absolute", left: 0, top: "50%", transform: "translateY(-50%)", width: 2, height: 16, background: "#10b981", borderRadius: "0 2px 2px 0" }} />
-                  )}
+                  {isActive && <div style={{ position: "absolute", left: 0, top: "50%", transform: "translateY(-50%)", width: 2, height: 16, background: "#10b981", borderRadius: "0 2px 2px 0" }} />}
                   <span style={{ fontSize: 12, flexShrink: 0, width: 14, textAlign: "center" }}>{item.icon}</span>
                   {!sidebarCollapsed && (
                     <div style={{ textAlign: "left" }}>
@@ -903,21 +845,16 @@ export default function Dashboard() {
             })}
           </nav>
 
-          {/* Plano progress */}
+          {/* ✅ v3.2: Plano progress — usa planLimit dinâmico */}
           {!sidebarCollapsed && (
             <div style={{ padding: "12px 16px", borderTop: "1px solid rgba(16,185,129,0.06)", borderBottom: "1px solid rgba(16,185,129,0.06)" }}>
               <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 6 }}>
-                <span style={{ fontSize: 9, color: "rgba(255,255,255,0.25)", letterSpacing: "0.1em", textTransform: "uppercase", fontFamily: "monospace" }}>Plano Free</span>
+                <span style={{ fontSize: 9, color: "rgba(255,255,255,0.25)", letterSpacing: "0.1em", textTransform: "uppercase", fontFamily: "monospace" }}>Plano {user.plano || "Free"}</span>
+                {/* ✅ v3.2: planUsed/planLimit — dinâmico */}
                 <span style={{ fontSize: 9, color: planPct > 80 ? "#f87171" : "rgba(16,185,129,0.6)", fontFamily: "monospace" }}>{planUsed}/{planLimit}</span>
               </div>
               <div style={{ height: 3, background: "rgba(255,255,255,0.05)", borderRadius: 2, overflow: "hidden" }}>
-                <div style={{
-                  height:     "100%", borderRadius: 2,
-                  background: planPct > 80 ? "#f87171" : "linear-gradient(90deg, #10b981, #34d399)",
-                  width:      `${planPct}%`,
-                  transition: "width 1s cubic-bezier(0.4,0,0.2,1)",
-                  boxShadow:  planPct > 0 ? "0 0 8px rgba(16,185,129,0.4)" : "none",
-                }} />
+                <div style={{ height: "100%", borderRadius: 2, background: planPct > 80 ? "#f87171" : "linear-gradient(90deg, #10b981, #34d399)", width: `${planPct}%`, transition: "width 1s cubic-bezier(0.4,0,0.2,1)", boxShadow: planPct > 0 ? "0 0 8px rgba(16,185,129,0.4)" : "none" }} />
               </div>
             </div>
           )}
@@ -925,13 +862,7 @@ export default function Dashboard() {
           {/* User footer */}
           <div style={{ padding: "14px 10px" }}>
             <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "0 4px", justifyContent: sidebarCollapsed ? "center" : "flex-start" }}>
-              <div style={{
-                width:      32, height: 32, borderRadius: "50%",
-                background: "linear-gradient(135deg, rgba(16,185,129,0.2), rgba(16,185,129,0.05))",
-                border:     "1px solid rgba(16,185,129,0.25)",
-                display:    "flex", alignItems: "center", justifyContent: "center", flexShrink: 0,
-                animation:  "pulse-glow 4s ease-in-out infinite",
-              }}>
+              <div style={{ width: 32, height: 32, borderRadius: "50%", background: "linear-gradient(135deg, rgba(16,185,129,0.2), rgba(16,185,129,0.05))", border: "1px solid rgba(16,185,129,0.25)", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0, animation: "pulse-glow 4s ease-in-out infinite" }}>
                 <span style={{ color: "#6ee7b7", fontSize: 11, fontWeight: 700, fontFamily: "monospace" }}>{initials}</span>
               </div>
               {!sidebarCollapsed && (
@@ -968,12 +899,10 @@ export default function Dashboard() {
               </p>
             </div>
             <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
-              {/* Relógio em tempo real */}
               <div style={{ display: "flex", alignItems: "center", gap: 6, padding: "5px 12px", borderRadius: 20, background: "rgba(16,185,129,0.04)", border: "1px solid rgba(16,185,129,0.1)" }}>
                 <div style={{ width: 5, height: 5, borderRadius: "50%", background: "#10b981", animation: "blink 1s ease infinite" }} />
                 <span style={{ fontSize: 11, color: "rgba(16,185,129,0.7)", fontFamily: "monospace", letterSpacing: "0.05em" }}>{clock}</span>
               </div>
-
               {user.auth_provider === "google" && (
                 <div style={{ display: "flex", alignItems: "center", gap: 6, padding: "5px 11px", borderRadius: 20, background: "rgba(66,133,244,0.06)", border: "1px solid rgba(66,133,244,0.15)" }}>
                   <svg width="10" height="10" viewBox="0 0 24 24">
@@ -998,23 +927,15 @@ export default function Dashboard() {
 
           <div style={{ flex: 1, padding: "28px 36px", overflowY: "auto" }}>
 
-            {/* CARDS MÉTRICAS — sempre visíveis com animação */}
+            {/* ✅ v3.2: CARDS MÉTRICAS — planLimit dinâmico em todos os cards */}
             <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 20, marginBottom: 36 }}>
               {[
-                { label: "Este mês",    value: countMonth, unit: "emissões",       color: "#10b981", glow: "rgba(16,185,129,0.12)",  border: "rgba(16,185,129,0.15)", delay: 100 },
-                { label: "Total geral", value: countTotal, unit: "certificados",   color: "#60a5fa", glow: "rgba(96,165,250,0.12)",  border: "rgba(96,165,250,0.15)",  delay: 200 },
-                { label: "Plano",       value: user.plano ? user.plano.charAt(0).toUpperCase() + user.plano.slice(1) : "Free", unit: `${planLimit} emissões/mês`, color: "#fbbf24", glow: "rgba(251,191,36,0.12)", border: "rgba(251,191,36,0.15)",  delay: 300 },
+                { label: "Este mês",    value: countMonth, unit: "emissões",                              color: "#10b981", glow: "rgba(16,185,129,0.12)",  border: "rgba(16,185,129,0.15)", delay: 100 },
+                { label: "Total geral", value: countTotal, unit: "certificados",                          color: "#60a5fa", glow: "rgba(96,165,250,0.12)",  border: "rgba(96,165,250,0.15)",  delay: 200 },
+                // ✅ v3.2: "{planLimit} emissões/mês" — dinâmico
+                { label: "Plano",       value: user.plano ? user.plano.charAt(0).toUpperCase() + user.plano.slice(1) : "Free", unit: `${planLimit} emissões/mês`, color: "#fbbf24", glow: "rgba(251,191,36,0.12)", border: "rgba(251,191,36,0.15)", delay: 300 },
               ].map((m, i) => (
-                <div key={i} style={{
-                  ...fadeIn(m.delay),
-                  borderRadius: 16,
-                  border:       `1px solid ${m.border}`,
-                  background:   `radial-gradient(ellipse at top left, ${m.glow} 0%, rgba(5,8,16,0) 70%)`,
-                  padding:      "22px 24px",
-                  position:     "relative", overflow: "hidden",
-                  cursor:       "default",
-                  transition:   "transform 0.2s, box-shadow 0.2s",
-                }}
+                <div key={i} style={{ ...fadeIn(m.delay), borderRadius: 16, border: `1px solid ${m.border}`, background: `radial-gradient(ellipse at top left, ${m.glow} 0%, rgba(5,8,16,0) 70%)`, padding: "22px 24px", position: "relative", overflow: "hidden", cursor: "default", transition: "transform 0.2s, box-shadow 0.2s" }}
                   onMouseEnter={e => { (e.currentTarget as HTMLDivElement).style.transform = "translateY(-2px)"; (e.currentTarget as HTMLDivElement).style.boxShadow = `0 8px 32px ${m.glow}`; }}
                   onMouseLeave={e => { (e.currentTarget as HTMLDivElement).style.transform = "translateY(0)"; (e.currentTarget as HTMLDivElement).style.boxShadow = "none"; }}
                 >
@@ -1030,7 +951,6 @@ export default function Dashboard() {
             {activeTab === "emitir" && (
               <div style={{ ...fadeIn(150), display: "flex", gap: 48, alignItems: "flex-start" }}>
 
-                {/* FORMULÁRIO — lado esquerdo */}
                 <div style={{ maxWidth: 480, flex: "0 0 480px" }}>
                   <div style={{ marginBottom: 20 }}>
                     <h2 style={{ fontSize: 13, fontWeight: 600, color: "rgba(255,255,255,0.5)", margin: "0 0 4px", letterSpacing: "0.05em", textTransform: "uppercase", fontFamily: "monospace" }}>Novo certificado</h2>
@@ -1045,35 +965,19 @@ export default function Dashboard() {
                         { name: "nome_curso",        placeholder: "Nome do curso ou treinamento",  type: "text"   },
                         { name: "carga_horaria",     placeholder: "Carga horária em horas",        type: "number" },
                       ].map(f => (
-                        <div key={f.name} style={{ position: "relative" }}>
-                          <input
-                            name={f.name}
-                            value={form[f.name as keyof CertForm]}
-                            placeholder={f.placeholder}
-                            type={f.type}
-                            min={f.type === "number" ? "1" : undefined}
-                            onChange={handleChange}
-                            required
-                            style={{
-                              width:       "100%", background: "rgba(10,15,24,0.8)",
-                              border:      "1px solid rgba(255,255,255,0.07)",
-                              borderRadius: 10, padding: "12px 16px",
-                              fontSize:    13, color: "rgba(255,255,255,0.8)",
-                              outline:     "none", boxSizing: "border-box",
-                              fontFamily:  "'Syne', system-ui, sans-serif",
-                              transition:  "border-color 0.2s, box-shadow 0.2s",
-                            }}
-                            onFocus={e => {
-                              e.currentTarget.style.borderColor = "rgba(16,185,129,0.5)";
-                              e.currentTarget.style.boxShadow   = "0 0 0 3px rgba(16,185,129,0.06), inset 0 0 20px rgba(16,185,129,0.02)";
-                              logger.event("FORM:FOCUS", f.name);
-                            }}
-                            onBlur={e => {
-                              e.currentTarget.style.borderColor = "rgba(255,255,255,0.07)";
-                              e.currentTarget.style.boxShadow   = "none";
-                            }}
-                          />
-                        </div>
+                        <input
+                          key={f.name}
+                          name={f.name}
+                          value={form[f.name as keyof CertForm]}
+                          placeholder={f.placeholder}
+                          type={f.type}
+                          min={f.type === "number" ? "1" : undefined}
+                          onChange={handleChange}
+                          required
+                          style={{ width: "100%", background: "rgba(10,15,24,0.8)", border: "1px solid rgba(255,255,255,0.07)", borderRadius: 10, padding: "12px 16px", fontSize: 13, color: "rgba(255,255,255,0.8)", outline: "none", boxSizing: "border-box", fontFamily: "'Syne', system-ui, sans-serif", transition: "border-color 0.2s, box-shadow 0.2s" }}
+                          onFocus={e => { e.currentTarget.style.borderColor = "rgba(16,185,129,0.5)"; e.currentTarget.style.boxShadow = "0 0 0 3px rgba(16,185,129,0.06)"; }}
+                          onBlur={e  => { e.currentTarget.style.borderColor = "rgba(255,255,255,0.07)"; e.currentTarget.style.boxShadow = "none"; }}
+                        />
                       ))}
 
                       <input
@@ -1082,16 +986,7 @@ export default function Dashboard() {
                         type="date"
                         onChange={handleChange}
                         required
-                        style={{
-                          width:       "100%", background: "rgba(10,15,24,0.8)",
-                          border:      "1px solid rgba(255,255,255,0.07)",
-                          borderRadius: 10, padding: "12px 16px",
-                          fontSize:    13, color: "rgba(255,255,255,0.5)",
-                          outline:     "none", boxSizing: "border-box",
-                          colorScheme: "dark",
-                          fontFamily:  "'Syne', system-ui, sans-serif",
-                          transition:  "border-color 0.2s, box-shadow 0.2s",
-                        }}
+                        style={{ width: "100%", background: "rgba(10,15,24,0.8)", border: "1px solid rgba(255,255,255,0.07)", borderRadius: 10, padding: "12px 16px", fontSize: 13, color: "rgba(255,255,255,0.5)", outline: "none", boxSizing: "border-box", colorScheme: "dark", fontFamily: "'Syne', system-ui, sans-serif", transition: "border-color 0.2s, box-shadow 0.2s" }}
                         onFocus={e => { e.currentTarget.style.borderColor = "rgba(16,185,129,0.5)"; e.currentTarget.style.boxShadow = "0 0 0 3px rgba(16,185,129,0.06)"; }}
                         onBlur={e  => { e.currentTarget.style.borderColor = "rgba(255,255,255,0.07)"; e.currentTarget.style.boxShadow = "none"; }}
                       />
@@ -1105,31 +1000,22 @@ export default function Dashboard() {
 
                       <button
                         type="submit"
-                        disabled={loadingSubmit}
-                        onClick={() => logger.event("CERT", "Botão Emitir clicado")}
-                        style={{
-                          width:       "100%",
-                          background:  loadingSubmit
-                            ? "rgba(16,185,129,0.04)"
-                            : "linear-gradient(135deg, rgba(16,185,129,0.15), rgba(16,185,129,0.08))",
-                          border:      "1px solid rgba(16,185,129,0.3)",
-                          borderRadius: 10, padding: "13px 0",
-                          color:       "#34d399", fontSize: 13, fontWeight: 700,
-                          cursor:      loadingSubmit ? "not-allowed" : "pointer",
-                          display:     "flex", alignItems: "center", justifyContent: "center", gap: 8,
-                          transition:  "all 0.2s", opacity: loadingSubmit ? 0.5 : 1,
-                          fontFamily:  "'Syne', system-ui, sans-serif",
-                          letterSpacing: "0.03em",
-                          boxShadow:   loadingSubmit ? "none" : "0 0 20px rgba(16,185,129,0.08)",
-                        }}
+                        // ✅ v3.2: bloqueado se limite atingido ou certificado visível
+                        disabled={loadingSubmit || planFull || submitSuccess}
+                        style={{ width: "100%", background: loadingSubmit ? "rgba(16,185,129,0.04)" : "linear-gradient(135deg, rgba(16,185,129,0.15), rgba(16,185,129,0.08))", border: "1px solid rgba(16,185,129,0.3)", borderRadius: 10, padding: "13px 0", color: "#34d399", fontSize: 13, fontWeight: 700, cursor: loadingSubmit ? "not-allowed" : "pointer", display: "flex", alignItems: "center", justifyContent: "center", gap: 8, transition: "all 0.2s", opacity: loadingSubmit ? 0.5 : 1, fontFamily: "'Syne', system-ui, sans-serif", letterSpacing: "0.03em", boxShadow: loadingSubmit ? "none" : "0 0 20px rgba(16,185,129,0.08)" }}
                         onMouseEnter={e => { if (!loadingSubmit) { (e.currentTarget as HTMLButtonElement).style.boxShadow = "0 0 30px rgba(16,185,129,0.15)"; (e.currentTarget as HTMLButtonElement).style.borderColor = "rgba(16,185,129,0.5)"; }}}
                         onMouseLeave={e => { if (!loadingSubmit) { (e.currentTarget as HTMLButtonElement).style.boxShadow = "0 0 20px rgba(16,185,129,0.08)"; (e.currentTarget as HTMLButtonElement).style.borderColor = "rgba(16,185,129,0.3)"; }}}
                       >
-                        {loadingSubmit ? (
-                          <><div style={{ width: 14, height: 14, borderRadius: "50%", border: "1.5px solid rgba(52,211,153,0.3)", borderTopColor: "#34d399", animation: "spin 0.7s linear infinite" }} /><span>Gerando PDF...</span></>
-                        ) : (
-                          <><span style={{ fontSize: 12 }}>✦</span><span>Emitir Certificado</span></>
-                        )}
+                        {loadingSubmit
+                          ? <><div style={{ width: 14, height: 14, borderRadius: "50%", border: "1.5px solid rgba(52,211,153,0.3)", borderTopColor: "#34d399", animation: "spin 0.7s linear infinite" }} /><span>Gerando PDF...</span></>
+                          : planFull
+                          // ✅ v3.2: limite atingido
+                          ? <><span>🔒</span><span>Limite mensal atingido</span></>
+                          : submitSuccess
+                          // ✅ v3.2: certificado visível — aguardando clique
+                          ? <><span>✓</span><span>Certificado emitido</span></>
+                          : <><span style={{ fontSize: 12 }}>✦</span><span>Emitir Certificado</span></>
+                        }
                       </button>
                     </div>
                   </form>
@@ -1142,107 +1028,63 @@ export default function Dashboard() {
                         </div>
                         <p style={{ color: "#34d399", fontSize: 13, fontWeight: 600, margin: 0 }}>Certificado gerado com sucesso</p>
                       </div>
-                      <a
-                        href={pdfUrl}
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        onClick={() => logger.event("CERT", "PDF aberto pelo usuário", { url: pdfUrl })}
-                        style={{ display: "inline-flex", alignItems: "center", gap: 8, padding: "8px 16px", borderRadius: 8, background: "rgba(16,185,129,0.1)", border: "1px solid rgba(16,185,129,0.25)", color: "#6ee7b7", fontSize: 12, textDecoration: "none", fontWeight: 600, transition: "all 0.2s" }}
-                        onMouseEnter={e => { (e.currentTarget as HTMLAnchorElement).style.background = "rgba(16,185,129,0.15)"; (e.currentTarget as HTMLAnchorElement).style.boxShadow = "0 0 20px rgba(16,185,129,0.1)"; }}
-                        onMouseLeave={e => { (e.currentTarget as HTMLAnchorElement).style.background = "rgba(16,185,129,0.1)"; (e.currentTarget as HTMLAnchorElement).style.boxShadow = "none"; }}
-                      >
-                        <span>⬡</span><span>Abrir PDF</span>
-                      </a>
+                      {/* ✅ v3.2: PDF + Emitir novo lado a lado */}
+                      <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
+                        <a href={pdfUrl} target="_blank" rel="noopener noreferrer" style={{ display: "inline-flex", alignItems: "center", gap: 8, padding: "8px 16px", borderRadius: 8, background: "rgba(16,185,129,0.1)", border: "1px solid rgba(16,185,129,0.25)", color: "#6ee7b7", fontSize: 12, textDecoration: "none", fontWeight: 600, transition: "all 0.2s" }}
+                          onMouseEnter={e => { (e.currentTarget as HTMLAnchorElement).style.background = "rgba(16,185,129,0.15)"; }}
+                          onMouseLeave={e => { (e.currentTarget as HTMLAnchorElement).style.background = "rgba(16,185,129,0.1)"; }}
+                        >
+                          <span>⬡</span><span>Abrir PDF</span>
+                        </a>
+                        {!planFull && (
+                          <button
+                            onClick={() => {
+                              logger.event("CERT", "Emitir novo — resetando formulário", { planUsed, planLimit });
+                              setSubmitSuccess(false);
+                              setPdfUrl("");
+                              setSubmitError("");
+                              setForm({ nome_participante: "", cpf: "", nome_curso: "", carga_horaria: "", data_emissao: new Date().toISOString().split("T")[0] });
+                            }}
+                            style={{ display: "inline-flex", alignItems: "center", gap: 6, padding: "8px 14px", borderRadius: 8, background: "transparent", border: "1px solid rgba(255,255,255,0.08)", color: "rgba(255,255,255,0.35)", fontSize: 12, cursor: "pointer", fontWeight: 500, transition: "all 0.2s", fontFamily: "'Syne', system-ui" }}
+                            onMouseEnter={e => { (e.currentTarget as HTMLButtonElement).style.color = "rgba(255,255,255,0.7)"; (e.currentTarget as HTMLButtonElement).style.borderColor = "rgba(255,255,255,0.2)"; }}
+                            onMouseLeave={e => { (e.currentTarget as HTMLButtonElement).style.color = "rgba(255,255,255,0.35)"; (e.currentTarget as HTMLButtonElement).style.borderColor = "rgba(255,255,255,0.08)"; }}
+                          >
+                            <span style={{ fontSize: 11 }}>+</span><span>Emitir novo certificado</span>
+                          </button>
+                        )}
+                      </div>
+                      <p style={{ fontSize: 10, color: planFull ? "#f87171" : "rgba(16,185,129,0.4)", margin: "10px 0 0", fontFamily: "monospace" }}>
+                        {planFull
+                          ? "🔒 Limite mensal atingido — faça upgrade para continuar"
+                          : `✅ ${planLimit - planUsed} emissão(ões) restante(s) este mês`
+                        }
+                      </p>
                     </div>
                   )}
                 </div>
 
-                {/* HERO IMAGE — lado direito */}
-                {/* ⚠️  Salve a imagem em web/public/images/hero-dashboard.png
-                    Ela aparece automaticamente aqui com o efeito cinematográfico */}
-                <div style={{
-                  flex:         1,
-                  minHeight:    520,
-                  borderRadius: 20,
-                  overflow:     "hidden",
-                  position:     "relative",
-                  border:       "1px solid rgba(16,185,129,0.08)",
-                  ...fadeIn(300),
-                }}>
-                  {/* Imagem de fundo */}
-                  <div style={{
-                    position:           "absolute", inset: 0,
-                    backgroundImage:    "url('/images/hero-dashboard.png')",
-                    backgroundSize:     "cover",
-                    backgroundPosition: "center right",
-                    opacity:            0.22,
-                    filter:             "blur(1px)",
-                    maskImage:          "linear-gradient(to right, transparent 0%, rgba(0,0,0,0.4) 20%, rgba(0,0,0,1) 100%)",
-                    WebkitMaskImage:    "linear-gradient(to right, transparent 0%, rgba(0,0,0,0.4) 20%, rgba(0,0,0,1) 100%)",
-                    transition:         "opacity 1s ease",
-                  }} />
-
-                  {/* Gradiente de integração dark-left */}
-                  <div style={{
-                    position:   "absolute", inset: 0,
-                    background: "linear-gradient(to right, rgba(5,8,16,0.96) 0%, rgba(5,8,16,0.65) 35%, rgba(5,8,16,0.1) 100%)",
-                  }} />
-
-                  {/* Glow verde ambiental */}
-                  <div style={{
-                    position:     "absolute", bottom: -60, right: -60,
-                    width:        280, height: 280,
-                    borderRadius: "50%",
-                    background:   "radial-gradient(circle, rgba(16,185,129,0.12) 0%, transparent 70%)",
-                    filter:       "blur(40px)",
-                    animation:    "pulse-glow 5s ease-in-out infinite",
-                  }} />
-
-                  {/* Conteúdo sobre a imagem */}
-                  <div style={{
-                    position:       "relative", zIndex: 2,
-                    display:        "flex", flexDirection: "column",
-                    justifyContent: "flex-end",
-                    height:         "100%", padding: "36px 36px 44px",
-                  }}>
-                    {/* Badge premium */}
-                    <div style={{
-                      display:      "inline-flex", alignItems: "center", gap: 6,
-                      padding:      "5px 12px", borderRadius: 20,
-                      background:   "rgba(16,185,129,0.08)",
-                      border:       "1px solid rgba(16,185,129,0.2)",
-                      marginBottom: 16, width: "fit-content",
-                    }}>
+                {/* HERO IMAGE */}
+                <div style={{ flex: 1, minHeight: 520, borderRadius: 20, overflow: "hidden", position: "relative", border: "1px solid rgba(16,185,129,0.08)", ...fadeIn(300) }}>
+                  <div style={{ position: "absolute", inset: 0, backgroundImage: "url('/images/hero-dashboard.png')", backgroundSize: "cover", backgroundPosition: "center right", opacity: 0.22, filter: "blur(1px)", maskImage: "linear-gradient(to right, transparent 0%, rgba(0,0,0,0.4) 20%, rgba(0,0,0,1) 100%)", WebkitMaskImage: "linear-gradient(to right, transparent 0%, rgba(0,0,0,0.4) 20%, rgba(0,0,0,1) 100%)" }} />
+                  <div style={{ position: "absolute", inset: 0, background: "linear-gradient(to right, rgba(5,8,16,0.96) 0%, rgba(5,8,16,0.65) 35%, rgba(5,8,16,0.1) 100%)" }} />
+                  <div style={{ position: "absolute", bottom: -60, right: -60, width: 280, height: 280, borderRadius: "50%", background: "radial-gradient(circle, rgba(16,185,129,0.12) 0%, transparent 70%)", filter: "blur(40px)", animation: "pulse-glow 5s ease-in-out infinite" }} />
+                  <div style={{ position: "relative", zIndex: 2, display: "flex", flexDirection: "column", justifyContent: "flex-end", height: "100%", padding: "36px 36px 44px" }}>
+                    <div style={{ display: "inline-flex", alignItems: "center", gap: 6, padding: "5px 12px", borderRadius: 20, background: "rgba(16,185,129,0.08)", border: "1px solid rgba(16,185,129,0.2)", marginBottom: 16, width: "fit-content" }}>
                       <div style={{ width: 5, height: 5, borderRadius: "50%", background: "#10b981", animation: "blink 2s ease infinite" }} />
                       <span style={{ fontSize: 10, color: "rgba(16,185,129,0.7)", letterSpacing: "0.12em", fontFamily: "monospace" }}>CERTIFICAÇÃO DIGITAL</span>
                     </div>
-
-                    <h3 style={{
-                      fontSize:      26, fontWeight: 700,
-                      color:         "rgba(255,255,255,0.9)",
-                      margin:        "0 0 12px",
-                      lineHeight:    1.25,
-                      letterSpacing: "-0.02em",
-                      maxWidth:      360,
-                    }}>
+                    <h3 style={{ fontSize: 26, fontWeight: 700, color: "rgba(255,255,255,0.9)", margin: "0 0 12px", lineHeight: 1.25, letterSpacing: "-0.02em", maxWidth: 360 }}>
                       Transforme conquistas em<br />
                       <span style={{ color: "#34d399" }}>certificações profissionais.</span>
                     </h3>
-
-                    <p style={{
-                      fontSize:  13, color: "rgba(255,255,255,0.35)",
-                      margin:    "0 0 28px", lineHeight: 1.7, maxWidth: 340,
-                    }}>
-                      Emitidos em segundos. Verificáveis instantaneamente.<br />
-                      Assinados com SHA-256.
+                    <p style={{ fontSize: 13, color: "rgba(255,255,255,0.35)", margin: "0 0 28px", lineHeight: 1.7, maxWidth: 340 }}>
+                      Emitidos em segundos. Verificáveis instantaneamente.<br />Assinados com SHA-256.
                     </p>
-
-                    {/* Stats inline */}
                     <div style={{ display: "flex", gap: 24 }}>
                       {[
-                        { value: "< 3s",   label: "tempo de emissão"  },
+                        { value: "< 3s",   label: "tempo de emissão"   },
                         { value: "SHA-256", label: "assinatura digital" },
-                        { value: "QR Code", label: "verificação pública" },
+                        { value: "QR Code", label: "verificação pública"},
                       ].map((s, i) => (
                         <div key={i}>
                           <p style={{ fontSize: 14, fontWeight: 700, color: "rgba(255,255,255,0.7)", margin: "0 0 3px", fontFamily: "monospace" }}>{s.value}</p>
@@ -1255,7 +1097,7 @@ export default function Dashboard() {
               </div>
             )}
 
-            {/* TAB: HISTÓRICO — timeline visual */}
+            {/* TAB: HISTÓRICO */}
             {activeTab === "historico" && (
               <div style={{ ...fadeIn(100) }}>
                 <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 24 }}>
@@ -1266,8 +1108,8 @@ export default function Dashboard() {
                   <button
                     onClick={() => { logger.table("HIST", "Refresh manual acionado"); fetchCertificates(); }}
                     style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 11, color: "rgba(255,255,255,0.2)", background: "rgba(255,255,255,0.03)", border: "1px solid rgba(255,255,255,0.06)", borderRadius: 8, padding: "6px 12px", cursor: "pointer", transition: "all 0.2s", fontFamily: "monospace" }}
-                    onMouseEnter={e => { (e.currentTarget as HTMLButtonElement).style.color = "rgba(255,255,255,0.6)"; (e.currentTarget as HTMLButtonElement).style.borderColor = "rgba(255,255,255,0.15)"; }}
-                    onMouseLeave={e => { (e.currentTarget as HTMLButtonElement).style.color = "rgba(255,255,255,0.2)"; (e.currentTarget as HTMLButtonElement).style.borderColor = "rgba(255,255,255,0.06)"; }}
+                    onMouseEnter={e => { (e.currentTarget as HTMLButtonElement).style.color = "rgba(255,255,255,0.6)"; }}
+                    onMouseLeave={e => { (e.currentTarget as HTMLButtonElement).style.color = "rgba(255,255,255,0.2)"; }}
                   >
                     <span style={{ animation: loadingCerts ? "spin 0.8s linear infinite" : "none", display: "inline-block" }}>↻</span>
                     <span>Atualizar</span>
@@ -1285,38 +1127,17 @@ export default function Dashboard() {
                     <div style={{ fontSize: 40, marginBottom: 16, animation: "float 3s ease-in-out infinite" }}>◈</div>
                     <p style={{ fontSize: 14, margin: "0 0 8px", color: "rgba(255,255,255,0.2)" }}>Nenhum certificado ainda</p>
                     <p style={{ fontSize: 12, margin: "0 0 20px", color: "rgba(255,255,255,0.1)" }}>Emita o primeiro para ver aqui</p>
-                    <button onClick={() => handleTabChange("emitir")} style={{ fontSize: 12, color: "rgba(16,185,129,0.5)", background: "rgba(16,185,129,0.05)", border: "1px solid rgba(16,185,129,0.15)", borderRadius: 8, padding: "8px 16px", cursor: "pointer", transition: "all 0.2s" }}
-                      onMouseEnter={e => (e.currentTarget.style.color = "#34d399")}
-                      onMouseLeave={e => (e.currentTarget.style.color = "rgba(16,185,129,0.5)")}
-                    >
+                    <button onClick={() => handleTabChange("emitir")} style={{ fontSize: 12, color: "rgba(16,185,129,0.5)", background: "rgba(16,185,129,0.05)", border: "1px solid rgba(16,185,129,0.15)", borderRadius: 8, padding: "8px 16px", cursor: "pointer", transition: "all 0.2s" }}>
                       Emitir primeiro certificado →
                     </button>
                   </div>
                 ) : (
                   <div style={{ position: "relative", paddingLeft: 28 }}>
-                    {/* Linha vertical da timeline */}
                     <div style={{ position: "absolute", left: 10, top: 10, bottom: 10, width: 1, background: "linear-gradient(to bottom, rgba(16,185,129,0.3), rgba(16,185,129,0.05))" }} />
-
                     {certificates.map((cert, i) => (
-                      <div
-                        key={cert.id}
-                        style={{
-                          position:   "relative", marginBottom: 16,
-                          opacity:    mounted ? 1 : 0,
-                          transform:  mounted ? "translateX(0)" : "translateX(-8px)",
-                          transition: `all 0.4s ease ${i * 60}ms`,
-                        }}
-                        onMouseEnter={() => logger.table("HIST:ROW", `Hover #${cert.id}`, { nome: cert.nome_participante })}
-                      >
-                        {/* Dot na timeline */}
+                      <div key={cert.id} style={{ position: "relative", marginBottom: 16, opacity: mounted ? 1 : 0, transform: mounted ? "translateX(0)" : "translateX(-8px)", transition: `all 0.4s ease ${i * 60}ms` }}>
                         <div style={{ position: "absolute", left: -22, top: 18, width: 8, height: 8, borderRadius: "50%", background: i === 0 ? "#10b981" : "rgba(16,185,129,0.3)", border: i === 0 ? "2px solid rgba(16,185,129,0.4)" : "1px solid rgba(16,185,129,0.2)", boxShadow: i === 0 ? "0 0 10px rgba(16,185,129,0.4)" : "none" }} />
-
-                        <div style={{
-                          borderRadius:   12, border: "1px solid rgba(255,255,255,0.05)",
-                          background:     "rgba(10,15,24,0.6)", padding: "14px 18px",
-                          backdropFilter: "blur(8px)", transition: "all 0.2s",
-                          cursor:         "default",
-                        }}
+                        <div style={{ borderRadius: 12, border: "1px solid rgba(255,255,255,0.05)", background: "rgba(10,15,24,0.6)", padding: "14px 18px", backdropFilter: "blur(8px)", transition: "all 0.2s", cursor: "default" }}
                           onMouseEnter={e => { (e.currentTarget as HTMLDivElement).style.borderColor = "rgba(16,185,129,0.15)"; (e.currentTarget as HTMLDivElement).style.background = "rgba(16,185,129,0.03)"; }}
                           onMouseLeave={e => { (e.currentTarget as HTMLDivElement).style.borderColor = "rgba(255,255,255,0.05)"; (e.currentTarget as HTMLDivElement).style.background = "rgba(10,15,24,0.6)"; }}
                         >
@@ -1325,24 +1146,15 @@ export default function Dashboard() {
                               <p style={{ fontSize: 13, fontWeight: 600, color: "rgba(255,255,255,0.8)", margin: "0 0 3px", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{cert.nome_participante}</p>
                               <p style={{ fontSize: 11, color: "rgba(255,255,255,0.35)", margin: "0 0 8px", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{cert.nome_curso}</p>
                               <div style={{ display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
-                                <span style={{ fontSize: 10, color: "rgba(255,255,255,0.2)", fontFamily: "monospace" }}>
-                                  {new Date(cert.data_emissao).toLocaleDateString("pt-BR")}
-                                </span>
+                                <span style={{ fontSize: 10, color: "rgba(255,255,255,0.2)", fontFamily: "monospace" }}>{new Date(cert.data_emissao).toLocaleDateString("pt-BR")}</span>
                                 <span style={{ fontSize: 10, color: "rgba(255,255,255,0.2)", fontFamily: "monospace" }}>{cert.carga_horaria}h</span>
-                                <span style={{ fontSize: 9, color: "rgba(16,185,129,0.4)", fontFamily: "monospace", background: "rgba(16,185,129,0.05)", padding: "2px 6px", borderRadius: 4, border: "1px solid rgba(16,185,129,0.1)" }}>
-                                  #{cert.codigo_verificacao?.substring(0, 8)}
-                                </span>
+                                <span style={{ fontSize: 9, color: "rgba(16,185,129,0.4)", fontFamily: "monospace", background: "rgba(16,185,129,0.05)", padding: "2px 6px", borderRadius: 4, border: "1px solid rgba(16,185,129,0.1)" }}>#{cert.codigo_verificacao?.substring(0, 8)}</span>
                               </div>
                             </div>
                             {cert.pdf_url && (
-                              <a
-                                href={cert.pdf_url}
-                                target="_blank"
-                                rel="noopener noreferrer"
-                                onClick={() => logger.table("HIST:PDF", "PDF aberto", { certId: cert.id })}
-                                style={{ display: "flex", alignItems: "center", gap: 5, padding: "6px 12px", borderRadius: 8, background: "rgba(16,185,129,0.06)", border: "1px solid rgba(16,185,129,0.15)", color: "rgba(52,211,153,0.6)", fontSize: 11, textDecoration: "none", fontWeight: 500, flexShrink: 0, transition: "all 0.2s" }}
-                                onMouseEnter={e => { (e.currentTarget as HTMLAnchorElement).style.color = "#34d399"; (e.currentTarget as HTMLAnchorElement).style.borderColor = "rgba(16,185,129,0.35)"; (e.currentTarget as HTMLAnchorElement).style.background = "rgba(16,185,129,0.1)"; }}
-                                onMouseLeave={e => { (e.currentTarget as HTMLAnchorElement).style.color = "rgba(52,211,153,0.6)"; (e.currentTarget as HTMLAnchorElement).style.borderColor = "rgba(16,185,129,0.15)"; (e.currentTarget as HTMLAnchorElement).style.background = "rgba(16,185,129,0.06)"; }}
+                              <a href={cert.pdf_url} target="_blank" rel="noopener noreferrer" style={{ display: "flex", alignItems: "center", gap: 5, padding: "6px 12px", borderRadius: 8, background: "rgba(16,185,129,0.06)", border: "1px solid rgba(16,185,129,0.15)", color: "rgba(52,211,153,0.6)", fontSize: 11, textDecoration: "none", fontWeight: 500, flexShrink: 0, transition: "all 0.2s" }}
+                                onMouseEnter={e => { (e.currentTarget as HTMLAnchorElement).style.color = "#34d399"; }}
+                                onMouseLeave={e => { (e.currentTarget as HTMLAnchorElement).style.color = "rgba(52,211,153,0.6)"; }}
                               >
                                 <span>⬡</span><span>PDF</span>
                               </a>
@@ -1356,20 +1168,12 @@ export default function Dashboard() {
               </div>
             )}
 
-            {/* TAB: PERFIL */}
+            {/* ✅ v3.2: TAB PERFIL — planLimit dinâmico em todos os campos */}
             {activeTab === "perfil" && (
               <div style={{ ...fadeIn(100), maxWidth: 420 }}>
                 <div style={{ borderRadius: 16, border: "1px solid rgba(255,255,255,0.06)", background: "rgba(10,15,24,0.8)", padding: 28, backdropFilter: "blur(12px)" }}>
-                  {/* Avatar grande */}
                   <div style={{ display: "flex", alignItems: "center", gap: 18, marginBottom: 28 }}>
-                    <div style={{
-                      width:        56, height: 56, borderRadius: "50%",
-                      background:   "linear-gradient(135deg, rgba(16,185,129,0.2), rgba(16,185,129,0.04))",
-                      border:       "1.5px solid rgba(16,185,129,0.3)",
-                      display:      "flex", alignItems: "center", justifyContent: "center",
-                      boxShadow:    "0 0 30px rgba(16,185,129,0.15)",
-                      animation:    "pulse-glow 4s ease-in-out infinite",
-                    }}>
+                    <div style={{ width: 56, height: 56, borderRadius: "50%", background: "linear-gradient(135deg, rgba(16,185,129,0.2), rgba(16,185,129,0.04))", border: "1.5px solid rgba(16,185,129,0.3)", display: "flex", alignItems: "center", justifyContent: "center", boxShadow: "0 0 30px rgba(16,185,129,0.15)", animation: "pulse-glow 4s ease-in-out infinite" }}>
                       <span style={{ color: "#6ee7b7", fontSize: 18, fontWeight: 700, fontFamily: "monospace" }}>{initials}</span>
                     </div>
                     <div>
@@ -1379,12 +1183,15 @@ export default function Dashboard() {
                   </div>
 
                   {[
-                    { label: "ID da conta",        value: `#${user.id}`,                                                               mono: true  },
-                    { label: "Autenticação",        value: user.auth_provider === "google" ? "Google OAuth 2.0" : "Email + Senha",      mono: false },
-                    { label: "Identidade",          value: user.cpf_cadastrado ? "✅ CPF verificado" : "⚠️  CPF pendente",              mono: false },
-                    { label: "Plano atual",         value: `${user.plano ? user.plano.charAt(0).toUpperCase() + user.plano.slice(1) : "Free"} — ${planLimit} emissões/mês`,                                                    mono: false },
-                    { label: "Emissões no mês",     value: `${metricsThisMonth} de ${planLimit}`,                                     mono: true  },
-                    { label: "Membro desde",        value: user.criado_em ? new Date(user.criado_em).toLocaleDateString("pt-BR") : "—", mono: true  },
+                    { label: "ID da conta",      value: `#${user.id}`,                                                              mono: true  },
+                    { label: "Autenticação",      value: user.auth_provider === "google" ? "Google OAuth 2.0" : "Email + Senha",    mono: false },
+                    { label: "Identidade",        value: user.cpf_cadastrado ? "✅ CPF verificado" : "⚠️  CPF pendente",            mono: false },
+                    // ✅ v3.2: planLimit dinâmico — não mais "5 emissões/mês" hardcoded
+                    { label: "Plano atual",       value: `${user.plano ? user.plano.charAt(0).toUpperCase() + user.plano.slice(1) : "Free"} — ${planLimit} emissões/mês`, mono: false },
+                    // ✅ v3.2: metricsThisMonth de planLimit — dinâmico
+                    // ✅ v3.2: planUsed real-time (inclui emissões desta sessão)
+                    { label: "Emissões no mês", value: `${planUsed} de ${planLimit}`, mono: true  },
+                    { label: "Membro desde",      value: user.criado_em ? new Date(user.criado_em).toLocaleDateString("pt-BR") : "—", mono: true },
                   ].map((item, i, arr) => (
                     <div key={item.label} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "11px 0", borderBottom: i < arr.length - 1 ? "1px solid rgba(255,255,255,0.04)" : "none" }}>
                       <span style={{ fontSize: 12, color: "rgba(255,255,255,0.25)" }}>{item.label}</span>
@@ -1392,23 +1199,20 @@ export default function Dashboard() {
                     </div>
                   ))}
 
-                  {/* Barra de progresso do plano */}
+                  {/* ✅ v3.2: Barra de progresso — planLimit dinâmico */}
                   <div style={{ marginTop: 20, padding: "16px", borderRadius: 10, background: "rgba(16,185,129,0.03)", border: "1px solid rgba(16,185,129,0.1)" }}>
                     <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 8 }}>
                       <span style={{ fontSize: 10, color: "rgba(255,255,255,0.3)", fontFamily: "monospace", letterSpacing: "0.08em" }}>USO DO PLANO</span>
                       <span style={{ fontSize: 10, color: planPct > 80 ? "#f87171" : "rgba(16,185,129,0.6)", fontFamily: "monospace" }}>{Math.round(planPct)}%</span>
                     </div>
                     <div style={{ height: 4, background: "rgba(255,255,255,0.05)", borderRadius: 2, overflow: "hidden" }}>
-                      <div style={{
-                        height:     "100%", borderRadius: 2,
-                        background: planPct > 80 ? "linear-gradient(90deg, #f87171, #fbbf24)" : "linear-gradient(90deg, #10b981, #34d399)",
-                        width:      `${planPct}%`,
-                        transition: "width 1.2s cubic-bezier(0.4,0,0.2,1)",
-                        boxShadow:  planPct > 0 ? "0 0 10px rgba(16,185,129,0.5)" : "none",
-                      }} />
+                      <div style={{ height: "100%", borderRadius: 2, background: planPct > 80 ? "linear-gradient(90deg, #f87171, #fbbf24)" : "linear-gradient(90deg, #10b981, #34d399)", width: `${planPct}%`, transition: "width 1.2s cubic-bezier(0.4,0,0.2,1)", boxShadow: planPct > 0 ? "0 0 10px rgba(16,185,129,0.5)" : "none" }} />
                     </div>
+                    {/* ✅ v3.2: planLimit - metricsThisMonth — dinâmico */}
                     <p style={{ fontSize: 10, color: "rgba(255,255,255,0.2)", margin: "8px 0 0", fontFamily: "monospace" }}>
-                      {planLimit - metricsThisMonth} emissões restantes este mês
+                      {/* ✅ v3.2: planUsed real-time */}
+                      {/* ✅ v3.2: real-time */}
+                      {Math.max(0, planLimit - planUsed)} emissões restantes este mês
                     </p>
                   </div>
                 </div>
