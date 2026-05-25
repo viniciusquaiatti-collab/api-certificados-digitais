@@ -51,6 +51,9 @@ const c = {
   magenta:      (s) => `${ANSI.magenta}${s}${ANSI.reset}`,
   gray:         (s) => `${ANSI.gray}${s}${ANSI.reset}`,
   bold:         (s) => `${ANSI.bold}${s}${ANSI.reset}`,
+  // ✅ fix: brightWhite estava ausente no objeto c — causava TypeError no logger.info e logger.success
+  // ANSI.brightWhite existia desde o início mas a função c.brightWhite nunca foi declarada
+  brightWhite:  (s) => `${ANSI.brightWhite}${s}${ANSI.reset}`,
   danger:       (s) => `${ANSI.bgRed}${ANSI.brightWhite}${ANSI.bold} ${s} ${ANSI.reset}`,
   warn:         (s) => `${ANSI.bgYellow}${ANSI.bold} ${s} ${ANSI.reset}`,
 };
