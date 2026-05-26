@@ -819,4 +819,5 @@ module.exports = {
   generateHash,
   maskCPF,
   formatDateBR,
+  getVerificationUrl,
 };
