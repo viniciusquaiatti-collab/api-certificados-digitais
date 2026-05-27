@@ -86,19 +86,6 @@ cd web
 npm install
 npm run dev            # porta 3000
 ```
-
-**Variáveis necessárias no backend:**
-```
-DATABASE_URL=
-JWT_SECRET=
-GOOGLE_CLIENT_ID=
-GOOGLE_CLIENT_SECRET=
-GOOGLE_CALLBACK_URL=
-CLOUDINARY_URL=
-FRONTEND_URL=
-ALLOWED_ORIGINS=
-```
-
 ---
 
 ## Próximos passos
