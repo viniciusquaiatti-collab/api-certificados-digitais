@@ -44,6 +44,8 @@ console.log(c.green(c.bold('🔏 [AuditLog] Modelo de auditoria inicializado')))
 //     Sem essas entradas, AuditLog.create() emitia console.warn
 //     "Ação não catalogada em ACTIONS" a cada login Google,
 //     o que o Railway interpretava como nível "error" nos logs.
+//
+// ✅ v3.0: CERT_REVOKED adicionado — revogação de certificados
 // ============================================================
 const ACTIONS = Object.freeze({
   // Auth local
@@ -63,6 +65,7 @@ const ACTIONS = Object.freeze({
   CERT_VERIFIED:      'CERT_VERIFIED',
   CERT_PDF_GENERATED: 'CERT_PDF_GENERATED',
   CERT_DELETED:       'CERT_DELETED',
+  CERT_REVOKED:       'CERT_REVOKED',   // ✅ v3.0: revogação de certificado pelo emissor
 
   // Admin
   ADMIN_ACCESS:      'ADMIN_ACCESS',

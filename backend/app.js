@@ -338,7 +338,8 @@ const authLimiter = rateLimit({
 });
 
 app.use('/api',      globalLimiter);
-app.use('/api/auth', authLimiter);
+app.use('/api/auth/login',    authLimiter); // ← só login e register sob rate limit agressivo
+app.use('/api/auth/register', authLimiter); // ← /me, /profile, /complete-profile ficam livres
 logger.success('APP', 'Rate limiting configurado', { global: '100/15min', auth: '20/15min' });
 
 // ============================================================

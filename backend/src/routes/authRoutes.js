@@ -12,10 +12,16 @@
 // Rotas protegidas (JWT obrigatório):
 //   GET  /api/auth/me                → valida sessão ativa
 //   GET  /api/auth/profile           → perfil completo
+//   POST /api/auth/complete-profile  → vincula CPF + data_nascimento (usuários Google)
 //
 // ⚠️  ADIÇÃO: rotas Google OAuth integradas ao Passport.
-//     Rate limiter de auth (20/15min) se aplica a todas —
-//     inclusive às rotas Google, pois estão sob /api/auth.
+//     Rate limiter de auth (20/15min) se aplica a login/register —
+//     /me, /profile e /complete-profile ficam fora do authLimiter
+//     (ver app.js) para não bloquear validações de sessão.
+//
+// ✅ v2.1: POST /complete-profile adicionado
+//     Rota que faltava — controller já existia mas rota nunca
+//     foi registrada, causando 404 no frontend Google OAuth.
 // ============================================================
 
 const express        = require('express');
@@ -279,6 +285,11 @@ router.get(
  * Valida sessão e retorna dados básicos do usuário.
  * Usado pelo frontend para verificar se o token ainda é válido.
  * Retorna também auth_provider para o frontend saber se é Google ou local.
+ *
+ * ⚠️  FORA do authLimiter (ver app.js) — esta rota é chamada
+ *     a cada render do dashboard. O authLimiter de 20/15min
+ *     esgotava durante testes normais de uso do Google OAuth.
+ *     Validação de JWT é leve e não precisa de rate limit agressivo.
  */
 router.get(
   '/me',
@@ -292,6 +303,8 @@ router.get(
  *
  * Retorna perfil completo do usuário autenticado.
  * Inclui nome, avatar e auth_provider além de id/email.
+ *
+ * ⚠️  FORA do authLimiter — mesmo motivo do /me acima.
  */
 router.get(
   '/profile',
@@ -300,18 +313,45 @@ router.get(
   AuthController.getProfile
 );
 
+/**
+ * POST /api/auth/complete-profile
+ *
+ * Vincula CPF + data_nascimento a usuários que fizeram login via Google.
+ * Obrigatório antes de emitir certificados — CPF identifica o emissor.
+ *
+ * ✅ v2.1 — NOVO (rota faltava, controller já existia)
+ *
+ * Corpo obrigatório:
+ *   { "cpf": "123.456.789-09", "data_nascimento": "1990-01-15" }
+ *
+ * Fluxo:
+ *   1. authMiddleware → JWT obrigatório (usuário já autenticado via Google)
+ *   2. completeProfile() → valida CPF, verifica duplicata, salva no banco
+ *   3. Retorna novo JWT com cpf_cadastrado = true
+ *
+ * ⚠️  FORA do authLimiter — é chamada uma única vez por usuário Google.
+ *     Não faz sentido impor rate limit agressivo em completar perfil.
+ */
+router.post(
+  '/complete-profile',
+  routeLogger('AUTH:COMPLETE_PROFILE'),
+  authMiddleware,
+  AuthController.completeProfile
+);
+
 // ============================================================
 // 📋 LOG DE ROTAS REGISTRADAS — exibido na inicialização
 // ============================================================
 logger.bigsep();
 logger.success('AuthRoutes', 'Rotas de autenticação registradas:');
 logger.sep();
-logger.route('POST', '/api/auth/register',         'public',    '→ AuthController.register');
-logger.route('POST', '/api/auth/login',             'public',    '→ AuthController.login');
-logger.route('GET',  '/api/auth/google',            'oauth',     '→ Passport → Google');
-logger.route('GET',  '/api/auth/google/callback',   'oauth',     '→ Passport → AuthController.googleCallback');
-logger.route('GET',  '/api/auth/me',                'protected', '→ authMiddleware → AuthController.me');
-logger.route('GET',  '/api/auth/profile',           'protected', '→ authMiddleware → AuthController.getProfile');
+logger.route('POST', '/api/auth/register',          'public',    '→ AuthController.register');
+logger.route('POST', '/api/auth/login',              'public',    '→ AuthController.login');
+logger.route('GET',  '/api/auth/google',             'oauth',     '→ Passport → Google');
+logger.route('GET',  '/api/auth/google/callback',    'oauth',     '→ Passport → AuthController.googleCallback');
+logger.route('GET',  '/api/auth/me',                 'protected', '→ authMiddleware → AuthController.me');
+logger.route('GET',  '/api/auth/profile',            'protected', '→ authMiddleware → AuthController.getProfile');
+logger.route('POST', '/api/auth/complete-profile',   'protected', '→ authMiddleware → AuthController.completeProfile');
 logger.sep();
 console.log(chalk.gray(`  OAuth Callback URL: ${process.env.GOOGLE_CALLBACK_URL || 'NÃO DEFINIDO ⚠️'}`));
 console.log(chalk.gray(`  Frontend URL:       ${process.env.FRONTEND_URL       || 'NÃO DEFINIDO ⚠️'}`));
