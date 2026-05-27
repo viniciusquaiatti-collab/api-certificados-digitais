@@ -1,6 +1,6 @@
 // src/models/Certificate.js
 // ============================================================
-// 🏢 NexaSpark — Certificate Model v2.0 ENTERPRISE
+// 🏢 NexaSpark — Certificate Model v3.0 ENTERPRISE
 //
 // Camada de acesso ao banco de dados para certificados.
 // Zero lógica de negócio aqui — apenas SQL + logging.
@@ -15,6 +15,13 @@
 //   🛡️  CPF nunca em texto puro nos logs (LGPD Art. 37)
 //   🗄️  Hints de migration SQL embutidos nos erros
 //   📈 Performance semafórica (⚡🟡🟠🔴) em todas as queries
+//
+// ✅ v3.0 — ADIÇÕES (nada removido, apenas acrescentado):
+//   🚫 revoke() — revoga certificado com validação de dono
+//      UPDATE atômico com AND revoked_at IS NULL — idempotente
+//      revoked_by registra QUEM revogou para auditoria
+//   🔍 findByVerificationCode() — agora retorna revoked_at e
+//      revoked_reason para o controller detectar revogação
 //
 // ⚠️  MIGRATION NECESSÁRIA (Supabase SQL Editor):
 //   ALTER TABLE certificates
@@ -184,12 +191,13 @@ const logger = {
 // 🖥️  BOOT — Model inicializado
 // ============================================================
 logger.sep();
-console.log(`${ANSI.brightGreen}📜  ${ANSI.bold}${ANSI.brightWhite}NexaSpark Certificate Model v2.0 ENTERPRISE${ANSI.reset}`);
+console.log(`${ANSI.brightGreen}📜  ${ANSI.bold}${ANSI.brightWhite}NexaSpark Certificate Model v3.0 ENTERPRISE${ANSI.reset}`);
 logger.info('BOOT', 'Model carregado e pronto', {
   env:       process.env.NODE_ENV || 'development',
   pid:       process.pid,
   migration: 'ALTER TABLE certificates ADD COLUMN IF NOT EXISTS hash_preview VARCHAR(64)',
   hint:      'Se hash_preview aparecer como null, rode a migration acima no Supabase',
+  novidade_v3: 'revoke() adicionado — findByVerificationCode() retorna revoked_at e revoked_reason',
 });
 logger.sep();
 
@@ -352,6 +360,9 @@ async function create(data) {
 //
 // ✅ v2: inclui hash_preview no SELECT
 //    — necessário para o DNA visual no frontend
+// ✅ v3: inclui revoked_at e revoked_reason no SELECT
+//    — necessário para o controller detectar revogação
+//    — controller retorna 410 Gone se revoked_at não for null
 // ✅ NUNCA retorna cpf ou hash completo (LGPD + segurança)
 // ✅ Auditoria de acesso público embutida no log
 // ============================================================
@@ -368,6 +379,7 @@ async function findByVerificationCode(codigo) {
     const result = await pool.query(
       // ⚠️  SEGURANÇA: NUNCA retornar cpf (completo) ou hash em rota pública
       // ✅  v2: hash_preview incluído — necessário para DNA visual no frontend
+      // ✅  v3: revoked_at e revoked_reason incluídos — controller detecta revogação
       //
       // Campos retornados e suas justificativas:
       //   id                  → referência interna
@@ -384,6 +396,8 @@ async function findByVerificationCode(codigo) {
       //   verificacoes_count  → contador para exibição ("3ª verificação")
       //   ultima_verificacao  → timestamp da última verificação
       //   criado_em           → data de emissão do certificado
+      //   revoked_at          → ✅ v3: null = válido, não-null = revogado
+      //   revoked_reason      → ✅ v3: motivo da revogação (exibido no 410)
       `SELECT
          id,
          nome_participante,
@@ -398,7 +412,9 @@ async function findByVerificationCode(codigo) {
          hash_preview,
          verificacoes_count,
          ultima_verificacao,
-         criado_em
+         criado_em,
+         revoked_at,
+         revoked_reason
        FROM certificates
        WHERE codigo_verificacao = $1`,
       [codigo]
@@ -419,6 +435,7 @@ async function findByVerificationCode(codigo) {
           : '❌ null — migration pendente ou certificado antigo',
         verificacoes_count: cert.verificacoes_count,
         pdf_presente:       cert.pdf_path ? '✅' : '❌ null',
+        revogado:           cert.revoked_at ? '🚫 SIM' : '✅ NÃO',
       });
     } else {
       logger.result('FIND_BY_CODE', 'warn', {
@@ -954,6 +971,114 @@ async function countThisMonthByUserId(usuario_id) {
 }
 
 // ============================================================
+// 🚫 REVOKE — Revoga um certificado
+//
+// ✅ v3.0 — NOVO
+//
+// ✅ UPDATE atômico com validação de dono — 1 round-trip
+// ✅ WHERE usuario_id = $2 — um usuário não revoga cert de outro
+// ✅ AND revoked_at IS NULL — idempotente, segunda revogação não
+//    sobrescreve a primeira — controller trata como "já revogado"
+// ✅ revoked_by registra QUEM revogou (auditoria LGPD)
+//
+// Retorna objeto com uma das três propriedades:
+//   { revoked: true, data: {...} }  → revogação bem-sucedida
+//   { notFound: true }              → não existe ou não é do usuário
+//   { alreadyRevoked: true, ... }   → já estava revogado
+// ============================================================
+async function revoke(id, usuario_id, { reason = 'Revogado pelo emissor', revoked_by } = {}) {
+  const t0 = Date.now();
+
+  logger.sql('REVOKE', 'UPDATE certificates SET revoked_at (revogação)', {
+    id,
+    usuario_id,
+    reason:     reason?.substring(0, 80),
+    revoked_by: revoked_by || usuario_id,
+  });
+
+  try {
+    const result = await pool.query(
+      // ⚠️  WHERE id = $1 AND usuario_id = $2:
+      //     Garante que só o dono pode revogar.
+      //     Um admin que precisar revogar de outro usuário
+      //     deve fazer via query direta no Supabase ou
+      //     via endpoint admin futuro — nunca bypassa isso.
+      //
+      // ⚠️  AND revoked_at IS NULL:
+      //     Idempotente — segunda revogação não sobrescreve
+      //     a primeira. Se já estava revogado, rowCount = 0
+      //     e o controller trata como "já revogado".
+      `UPDATE certificates
+       SET revoked_at     = NOW(),
+           revoked_reason = $3,
+           revoked_by     = $4,
+           atualizado_em  = NOW()
+       WHERE id          = $1
+         AND usuario_id  = $2
+         AND revoked_at IS NULL
+       RETURNING id, codigo_verificacao, revoked_at, revoked_reason, revoked_by`,
+      [id, usuario_id, reason, revoked_by || usuario_id]
+    );
+
+    logger.perf('REVOKE', 'UPDATE SET revoked_at', Date.now() - t0);
+
+    if (result.rowCount === 0) {
+      // Duas possibilidades:
+      // 1. Certificado não existe ou não pertence ao usuário
+      // 2. Já estava revogado (AND revoked_at IS NULL falhou)
+      // Verificamos qual é para o controller tratar corretamente
+      const checkResult = await pool.query(
+        `SELECT id, revoked_at FROM certificates WHERE id = $1 AND usuario_id = $2`,
+        [id, usuario_id]
+      );
+
+      if (checkResult.rows.length === 0) {
+        // Não existe ou não pertence ao usuário
+        logger.warn('REVOKE', '⚠️  Certificado não encontrado ou não pertence ao usuário', {
+          id,
+          usuario_id,
+          sec_note: 'Pode ser tentativa de revogar cert de outro usuário',
+        });
+        return { notFound: true };
+      }
+
+      if (checkResult.rows[0].revoked_at) {
+        // Já estava revogado
+        logger.warn('REVOKE', '⚠️  Certificado já estava revogado — operação idempotente', {
+          id,
+          revoked_at: checkResult.rows[0].revoked_at,
+        });
+        return { alreadyRevoked: true, revoked_at: checkResult.rows[0].revoked_at };
+      }
+    }
+
+    const revoked = result.rows[0];
+
+    logger.result('REVOKE', 'ok', {
+      id:                revoked.id,
+      codigo_verificacao: revoked.codigo_verificacao,
+      revoked_at:        revoked.revoked_at,
+      revoked_reason:    revoked.revoked_reason,
+      revoked_by:        revoked.revoked_by,
+      totalMs:           Date.now() - t0,
+    });
+
+    return { revoked: true, data: revoked };
+
+  } catch (error) {
+    logger.perf('REVOKE', 'UPDATE falhou em', Date.now() - t0);
+    logger.error('REVOKE', '❌ Erro ao revogar certificado', {
+      message:  error.message,
+      pg_code:  error.code,
+      id,
+      usuario_id,
+    });
+    logger.stack('REVOKE', error);
+    throw error;
+  }
+}
+
+// ============================================================
 // 📤 EXPORTS
 // ============================================================
 module.exports = {
@@ -974,4 +1099,7 @@ module.exports = {
   // ── Auditoria ─────────────────────────────────────────────
   incrementVerification,
   addVerificationHistory,
+
+  // ── Revogação ─────────────────────────────────────────────
+  revoke,                 // ✅ v3: NOVO — revogação de certificados
 };

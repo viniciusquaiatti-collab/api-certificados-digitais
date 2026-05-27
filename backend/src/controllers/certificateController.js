@@ -1,6 +1,6 @@
 // src/controllers/certificateController.js
 // ============================================================
-// 🏢 NexaSpark — Certificate Controller v2.1 ENTERPRISE
+// 🏢 NexaSpark — Certificate Controller v3.0 ENTERPRISE
 //
 // Core do produto: emissão e verificação de certificados digitais.
 // Cada operação é rastreada, auditada e monitorada de ponta a ponta.
@@ -28,11 +28,24 @@
 //   🔌 Aplicado em TODOS os 4 métodos: createCertificate,
 //      verifyCertificate, getUserCertificates, getCertificateById
 //
+// ✅ v3.0 — ADIÇÕES (nada removido, apenas acrescentado):
+//   🚫 revokeCertificate() — PATCH /:id/revoke
+//      Só o dono pode revogar. Irreversível. Idempotente.
+//      Registra no AuditLog com nível máximo de detalhe.
+//   🔍 verifyCertificate() — detecta certificados revogados
+//      Retorna 410 Gone antes de incrementar qualquer contador.
+//      Audita verificações de certificados revogados.
+//
 // ⚠️  POR QUE 503 e não 500?
 //   500 = "Internal Server Error" — erro no código
 //   503 = "Service Unavailable"   — serviço/dependência indisponível
 //   O banco inacessível é exatamente 503. Semanticamente correto.
 //   Testes que fazem expect(res.status).not.toBe(500) passam com 503.
+//
+// ⚠️  POR QUE 410 para certificado revogado?
+//   404 = "Not Found"  — nunca existiu
+//   410 = "Gone"       — existiu mas não existe mais
+//   Certificado revogado existiu — 410 é semanticamente correto.
 // ============================================================
 
 const Certificate        = require('../models/Certificate');
@@ -242,9 +255,9 @@ const logger = {
 // ============================================================
 // 🖥️  BOOT — Controller inicializado
 // ============================================================
-logger.banner('NexaSpark Certificate Controller v2.1 ENTERPRISE', '🔥');
+logger.banner('NexaSpark Certificate Controller v3.0 ENTERPRISE', '🔥');
 logger.info('BOOT', 'Controller carregado', {
-  version: '2.1.0',
+  version: '3.0.0',
   node:    process.version,
   env:     process.env.NODE_ENV || 'development',
   pid:     process.pid,
@@ -256,6 +269,11 @@ logger.info('BOOT', 'Controller carregado', {
     'logger.conn() — badge exclusivo para erros de conectividade',
     'pid() em todos os logs — correlação multi-instância Railway',
     'Aplicado em createCertificate, verifyCertificate, getUserCertificates, getCertificateById',
+  ],
+  novidade_v3_0: [
+    'revokeCertificate() — PATCH /:id/revoke — revogação irreversível e idempotente',
+    'verifyCertificate() — 410 Gone para certificados revogados (antes do incremento)',
+    'AuditLog registra verificações de certificados revogados como alerta de fraude',
   ],
 });
 logger.sep();
@@ -329,7 +347,7 @@ function isDbConnErr(error) {
  * Resposta padronizada 503 para banco inacessível.
  * Centraliza: log de conectividade + resposta HTTP em um lugar.
  *
- * ⚠️  Chamado no catch de TODOS os 4 métodos do controller
+ * ⚠️  Chamado no catch de TODOS os métodos do controller
  *     ANTES do fallback genérico de 500.
  *
  * @param {object} res      — Express response object
@@ -848,6 +866,10 @@ class CertificateController {
   //    — frontend exibe DNA visual (barras coloridas SHA-256)
   //    — hash completo NUNCA é retornado (dado interno)
   //
+  // ✅ v3: detecta certificados revogados
+  //    — retorna 410 Gone antes de incrementar qualquer contador
+  //    — audita verificações de certificados revogados
+  //
   // Segurança: nunca retorna CPF completo, hash completo,
   // usuario_id ou qualquer dado sensível interno.
   // ══════════════════════════════════════════════════════════
@@ -914,12 +936,64 @@ class CertificateController {
         id:                certificate.id,
         nome_participante: certificate.nome_participante,
         nome_curso:        certificate.nome_curso,
+        revogado:          certificate.revoked_at ? '🚫 SIM' : '✅ NÃO',
         hash_preview_db:   certificate.hash_preview
           ? certificate.hash_preview.substring(0, 16) + '...'
           : '❌ null (hash_preview não salvo no banco)',
         pdf_path:          certificate.pdf_path ? '✅ presente' : '❌ null',
       });
       logger.sep();
+
+      // ── ✅ v3: Verifica revogação ANTES de incrementar ────
+      // ⚠️  410 Gone = recurso existiu mas não existe mais.
+      //     Semanticamente correto para certificados revogados.
+      //     Certificados revogados NÃO incrementam o contador —
+      //     seria ruído nos analytics e incentivo ao uso fraudulento.
+      if (certificate.revoked_at) {
+        logger.warn('VERIFY', '🚫 Certificado REVOGADO — retornando 410 Gone', {
+          certId:         certificate.id,
+          revoked_at:     certificate.revoked_at,
+          revoked_reason: certificate.revoked_reason,
+          codigo,
+          ip:             ctx.ip,
+          alerta:         'Verificação de cert revogado — possível tentativa de uso fraudulento',
+        });
+
+        // Auditamos verificações de certificados revogados —
+        // podem indicar tentativa de uso fraudulento de certificado cancelado
+        await AuditLog.create({
+          usuario_id: null,
+          acao:       AuditLog.ACTIONS.CERT_VERIFIED,
+          detalhe:    `Verificação de certificado REVOGADO: ${codigo}`,
+          ip_address: ctx.ip,
+          user_agent: ctx.userAgent,
+          metadata: {
+            certId:         certificate.id,
+            codigo,
+            revoked:        true,
+            revoked_at:     certificate.revoked_at,
+            revoked_reason: certificate.revoked_reason,
+            requestId:      ctx.requestId,
+            alerta:         'Verificação de cert revogado — possível tentativa de uso fraudulento',
+          },
+        });
+
+        logger.res(410, 'CERT_REVOKED');
+
+        return res.status(410).json({
+          success: false,
+          error:   'Este certificado foi revogado e não é mais válido',
+          code:    'CERT_REVOKED',
+          data: {
+            valido:             false,
+            revogado:           true,
+            revoked_at:         certificate.revoked_at,
+            revoked_reason:     certificate.revoked_reason,
+            // Mantemos dados básicos para o titular identificar qual cert é
+            codigo_verificacao: certificate.codigo_verificacao,
+          },
+        });
+      }
 
       // ── Incrementa contador + histórico (paralelo) ────────
       // ⚠️  Promise.allSettled: ambos tentam executar independente
@@ -1290,6 +1364,193 @@ class CertificateController {
         success:   false,
         error:     'Erro ao buscar certificado',
         code:      'CERT_GET_ERROR',
+        requestId: ctx.requestId,
+      });
+    }
+  }
+
+  // ══════════════════════════════════════════════════════════
+  // 🚫 REVOKE CERTIFICATE — Rota autenticada (dono do cert)
+  //
+  // PATCH /api/certificates/:id/revoke
+  //
+  // Corpo opcional:
+  //   { "reason": "Certificado emitido por engano" }
+  //
+  // Regras:
+  //   — Só o dono pode revogar (usuario_id validado no model)
+  //   — Revogação é irreversível — não tem endpoint de "unrevoke"
+  //   — Certificado revogado continua existindo mas marcado inválido
+  //   — Página de verificação retorna 410 Gone
+  //   — Operação idempotente — revogar duas vezes não quebra
+  //
+  // ✅ v3.0 — NOVO
+  // ══════════════════════════════════════════════════════════
+  static async revokeCertificate(req, res) {
+    const t0  = Date.now();
+    const ctx = reqContext(req);
+
+    logger.sep();
+    logger.banner(`REVOGANDO CERTIFICADO #${req.params.id} — User #${req.user?.id}`, '🚫');
+    logger.req('PATCH', `/api/certificates/${req.params.id}/revoke`, {
+      requestId: ctx.requestId,
+      userId:    ctx.userId,
+      ip:        ctx.ip,
+    });
+
+    try {
+      const { id }     = req.params;
+      const usuario_id = req.user.id;
+      const reason     = req.body?.reason?.trim() || 'Revogado pelo emissor';
+
+      // Valida reason — não pode ser muito longa
+      if (reason.length > 255) {
+        logger.warn('REVOKE', '⚠️  Motivo de revogação muito longo', {
+          length:    reason.length,
+          max:       255,
+          requestId: ctx.requestId,
+        });
+
+        return res.status(400).json({
+          success: false,
+          error:   'Motivo de revogação deve ter no máximo 255 caracteres',
+          code:    'REVOKE_REASON_TOO_LONG',
+        });
+      }
+
+      logger.info('REVOKE', '🔍 Iniciando revogação...', {
+        certId:    id,
+        usuario_id,
+        reason:    reason.substring(0, 60),
+        requestId: ctx.requestId,
+      });
+
+      // ── Executa revogação no model ─────────────────────────
+      const t1     = Date.now();
+      const result = await Certificate.revoke(id, usuario_id, {
+        reason,
+        revoked_by: usuario_id,
+      });
+      logger.perf('REVOKE', 'Certificate.revoke()', Date.now() - t1);
+
+      // ── Certificado não encontrado ou não pertence ao usuário
+      if (result.notFound) {
+        logger.warn('REVOKE', '⚠️  Certificado não encontrado ou acesso negado', {
+          certId:    id,
+          usuario_id,
+          requestId: ctx.requestId,
+          sec_note:  'Pode ser tentativa de revogar cert de outro usuário',
+        });
+
+        // ⚠️  404 e não 403 — não revelamos se o certificado existe
+        //     Retornar 403 confirmaria que o cert existe mas pertence
+        //     a outro usuário — isso é vazamento de informação.
+        return res.status(404).json({
+          success: false,
+          error:   'Certificado não encontrado',
+          code:    'CERT_NOT_FOUND',
+        });
+      }
+
+      // ── Já estava revogado — responde com sucesso (idempotente)
+      if (result.alreadyRevoked) {
+        logger.warn('REVOKE', '⚠️  Certificado já revogado — resposta idempotente', {
+          certId:     id,
+          revoked_at: result.revoked_at,
+          requestId:  ctx.requestId,
+        });
+
+        return res.status(200).json({
+          success: true,
+          message: 'Certificado já estava revogado',
+          code:    'CERT_ALREADY_REVOKED',
+          data: {
+            id,
+            revoked_at: result.revoked_at,
+          },
+        });
+      }
+
+      // ── Revogação bem-sucedida ─────────────────────────────
+      const { data: revokedCert } = result;
+
+      logger.success('REVOKE', '✅ Certificado revogado com sucesso', {
+        certId:             revokedCert.id,
+        codigo_verificacao: revokedCert.codigo_verificacao,
+        revoked_at:         revokedCert.revoked_at,
+        revoked_reason:     revokedCert.revoked_reason,
+        requestId:          ctx.requestId,
+      });
+
+      // ── Auditoria — revogação é evento crítico ─────────────
+      // Registramos com nível de detalhe máximo pois revogação
+      // pode ter implicações legais e de compliance.
+      logger.audit('Revogação auditada', {
+        certId:             revokedCert.id,
+        codigo_verificacao: revokedCert.codigo_verificacao,
+        usuario_id,
+        reason,
+        ip:        ctx.ip,
+        userAgent: ctx.userAgent,
+      });
+
+      await AuditLog.create({
+        usuario_id,
+        acao:       'CERT_REVOKED',
+        detalhe:    `Certificado revogado: ID ${revokedCert.id} — Motivo: "${reason}"`,
+        ip_address: ctx.ip,
+        user_agent: ctx.userAgent,
+        metadata: {
+          certId:             revokedCert.id,
+          codigo_verificacao: revokedCert.codigo_verificacao,
+          revoked_at:         revokedCert.revoked_at,
+          revoked_reason:     reason,
+          revoked_by:         usuario_id,
+          requestId:          ctx.requestId,
+        },
+      });
+
+      const totalMs = Date.now() - t0;
+      logger.perf('REVOKE', 'Fluxo completo de revogação', totalMs);
+      logger.res(200, 'Certificado revogado com sucesso', {
+        certId: revokedCert.id,
+        totalMs,
+      });
+      logger.sep();
+
+      return res.status(200).json({
+        success: true,
+        message: 'Certificado revogado com sucesso',
+        data: {
+          id:                 revokedCert.id,
+          codigo_verificacao: revokedCert.codigo_verificacao,
+          revoked_at:         revokedCert.revoked_at,
+          revoked_reason:     revokedCert.revoked_reason,
+        },
+      });
+
+    } catch (error) {
+      const totalMs = Date.now() - t0;
+
+      if (isDbConnErr(error)) {
+        return dbConnResponse(res, 'REVOKE', ctx, totalMs, error);
+      }
+
+      logger.error('REVOKE', `❌ Erro não tratado após ${totalMs}ms`, {
+        message:   error.message,
+        code:      error.code,
+        certId:    req.params.id,
+        requestId: ctx.requestId,
+      });
+      logger.stack('REVOKE', error);
+      logger.sep();
+
+      logger.res(500, 'CERT_REVOKE_ERROR');
+
+      return res.status(500).json({
+        success:   false,
+        error:     'Erro ao revogar certificado. Tente novamente.',
+        code:      'CERT_REVOKE_ERROR',
         requestId: ctx.requestId,
       });
     }

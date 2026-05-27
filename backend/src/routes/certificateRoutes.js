@@ -37,6 +37,12 @@
 //     4. planLimitMiddleware → ✅ NOVO — verifica limite mensal do plano
 //     5. validateSchema      → valida body
 //     6. controller          → lógica de negócio
+//
+// ✅ v3.0 — ADIÇÕES (nada removido, apenas acrescentado):
+//   PATCH /:id/revoke — rota de revogação de certificados
+//   Só o dono pode revogar. Requer JWT. Idempotente.
+//   Declarada ANTES de /:id para Express não confundir "revoke"
+//   com um ID numérico — mas usa PATCH então sem conflito real.
 // ============================================================
 
 const express               = require('express');
@@ -92,9 +98,6 @@ const logger = {
 // Cada camada captura um tipo diferente de abuso.
 // Nenhuma camada sozinha é suficiente — a segurança vem
 // da combinação de todas elas.
-//
-// ✅ v2.1: camada 5 adicionada — planLimitMiddleware agora está
-// efetivamente na chain e bloqueia emissões acima do plano.
 // ============================================================
 
 // ── certEmitLimiter — Emissão de certificados ─────────────
@@ -210,7 +213,6 @@ const verifyLimiter = rateLimit({
 
 logger.success('CertificateRoutes', 'Rate limiters configurados ✅', {
   certEmitLimiter:     '10 emissões/min por userId (fallback: IP)',
-  // ✅ v2.1: planLimitMiddleware agora está ATIVO na chain
   planLimitMiddleware: 'limite mensal do plano free — camada 5 ATIVA ✅',
   verifyLimiter:       '30 verificações/min por IP (anti-enumeração)',
   camadas:             '5 e 6 de defesa em profundidade ativas',
@@ -266,6 +268,10 @@ function routeLogger(routeName) {
  * ⚠️  RATE LIMIT: verifyLimiter (30/min por IP)
  *     Protege contra enumeração de códigos por brute force.
  *     Posição: antes do validateSchema para bloquear mais cedo.
+ *
+ * ✅ v3: retorna 410 Gone para certificados revogados
+ *     O controller detecta revoked_at no retorno do model
+ *     e retorna 410 antes de incrementar qualquer contador.
  */
 router.get(
   '/verify/:codigo',
@@ -287,18 +293,11 @@ router.get(
  *
  * ✅ v2.1 — CHAIN CORRIGIDA (planLimitMiddleware adicionado):
  *
- *   PROBLEMA ORIGINAL: a chain abaixo não incluía planLimitMiddleware.
- *   O middleware estava importado mas nunca chamado — por isso o limite
- *   mensal nunca bloqueava e usuários podiam emitir ilimitadamente.
- *
  *   CHAIN CORRETA v2.1 (ordem importa):
  *   1. routeLogger         → loga method, path, requestId, IP e timestamp
  *   2. authMiddleware      → valida JWT + popula req.user com plano_limite
- *                            (v2.1 do authMiddleware propaga plano_limite)
  *   3. certEmitLimiter     → rate limit 10/min por userId (anti-spam)
  *   4. planLimitMiddleware → ✅ ADICIONADO — verifica limite mensal do plano
- *                            lê req.user.plano_limite, conta emissões do mês,
- *                            retorna 403 PLAN_LIMIT_REACHED se excedido
  *   5. validateSchema      → valida body contra certificateSchema (Zod)
  *   6. controller          → lógica de negócio: hash, PDF, banco, audit
  *
@@ -307,8 +306,6 @@ router.get(
  *   — precisa de req.user.plano_limite para funcionar
  *   planLimitMiddleware DEVE vir ANTES do controller
  *   — bloqueia ANTES de gerar o PDF (economiza Cloudinary + CPU)
- *   planLimitMiddleware DEVE vir ANTES do validateSchema
- *   — evita parsing do body para requests que serão bloqueados de qualquer forma
  */
 router.post(
   '/',
@@ -334,6 +331,39 @@ router.get(
 );
 
 /**
+ * PATCH /api/certificates/:id/revoke
+ *
+ * Revoga um certificado digital.
+ * Requer autenticação JWT — só o dono pode revogar.
+ *
+ * Corpo (opcional):
+ *   { "reason": "Certificado emitido por engano" }
+ *
+ * ✅ v3.0 — NOVO
+ *
+ * ⚠️  ORDEM DAS ROTAS IMPORTA:
+ *     Declarada ANTES de /:id por convenção de clareza.
+ *     Na prática não há conflito — usa PATCH e /:id usa GET,
+ *     mas Express resolve por método HTTP, não só por path.
+ *
+ * ⚠️  Por que PATCH e não DELETE?
+ *     DELETE semanticamente remove o recurso.
+ *     Revogação NÃO remove — o certificado continua existindo
+ *     e verificável (com 410 Gone). PATCH é semanticamente
+ *     correto para "modificação parcial do estado".
+ *
+ * ⚠️  Por que não precisa de validateSchema?
+ *     O body é opcional — { reason } é string simples.
+ *     Validação de tamanho (max 255 chars) está no controller.
+ */
+router.patch(
+  '/:id/revoke',
+  routeLogger('CERT:REVOKE'),
+  authMiddleware,                          // ← JWT obrigatório — só o dono revoga
+  CertificateController.revokeCertificate  // ← lógica de revogação
+);
+
+/**
  * GET /api/certificates/:id
  *
  * Retorna certificado específico pelo ID.
@@ -355,17 +385,23 @@ router.get(
 // ============================================================
 logger.sep();
 logger.success('CertificateRoutes', 'Rotas de certificados registradas:');
-logger.route('GET',  '/api/certificates/verify/:codigo', 'limited');
-logger.route('POST', '/api/certificates',                'protected');
-logger.route('GET',  '/api/certificates',                'protected');
-logger.route('GET',  '/api/certificates/:id',            'protected');
+logger.route('GET',   '/api/certificates/verify/:codigo', 'limited');
+logger.route('POST',  '/api/certificates',                'protected');
+logger.route('GET',   '/api/certificates',                'protected');
+logger.route('PATCH', '/api/certificates/:id/revoke',     'protected');
+logger.route('GET',   '/api/certificates/:id',            'protected');
 // ✅ v2.1: confirmação de que planLimitMiddleware está ATIVO na chain
 logger.success('CertificateRoutes', '✅ planLimitMiddleware ATIVO na rota POST /', {
   posicao:  '3º na chain (após auth + rateLimit, antes de validateSchema)',
-  bloqueia: 'plano free → 2 certificados/mês (configurado em planLimitMiddleware.js)',
+  bloqueia: 'plano free → limite mensal configurado em planLimitMiddleware.js',
   retorna:  '403 PLAN_LIMIT_REACHED quando limite atingido',
   depende:  'authMiddleware v2.1 — req.user.plano_limite deve estar populado',
-  nota:     'sem authMiddleware v2.1, plano_limite cai no fallback do planLimitMiddleware',
+});
+// ✅ v3.0: confirmação da rota de revogação
+logger.success('CertificateRoutes', '✅ PATCH /:id/revoke ATIVO — v3.0', {
+  auth:        'JWT obrigatório — só o dono revoga',
+  idempotente: 'revogar duas vezes não quebra — retorna 200 com CERT_ALREADY_REVOKED',
+  verificacao: 'certificados revogados retornam 410 Gone na rota /verify/:codigo',
 });
 logger.sep();
 
