@@ -1,57 +1,277 @@
-#  NexaSpark
+NexaSpark
 
-Eu acabei de concluir o curso técnico de Desenvolvimento Backend pelo SENAI e quis ir além do que me ensinaram. Eu usei IA generativa como ferramenta de aceleração — mas cada decisão de arquitetura, cada escolha técnica e cada problema resolvido aqui passou pela minha cabeça antes de passar pelo código.
+Plataforma SaaS de certificação digital com verificação pública, autenticação segura, geração automática de PDFs e arquitetura focada em segurança, rastreabilidade e escalabilidade.
 
-Eu construí uma plataforma SaaS de certificação digital. Do zero. Em produção.
+O projeto foi desenvolvido como uma aplicação real de produto — não apenas como portfólio acadêmico. A proposta da NexaSpark é permitir que empresas, instituições e profissionais emitam certificados digitais verificáveis através de QR Code e URL pública, com validação criptográfica e infraestrutura cloud.
 
----
+Preview
+Frontend → Next.js + React
+Backend → Node.js + Express
+Database → PostgreSQL (Supabase)
+Storage → Cloudinary
+Deploy → Vercel + Railway
+Security → JWT + RLS + Rate Limit + Anti-Abuse
+Tests → 99 testes automatizados
+Funcionalidades
+Emissão de certificados
+Geração automática de certificados PDF
+QR Code incorporado ao documento
+Código único de verificação
+Hash SHA-256 para integridade
+Upload automático para Cloudinary
+Persistência segura no PostgreSQL
+Verificação pública
 
-## Por que isso existe
+Cada certificado possui:
 
-Eu queria um projeto que fosse real — não um CRUD para portfólio. Eu escolhi certificação digital porque envolve criptografia, controle de acesso, geração de documentos, pagamentos futuros e uma necessidade real de mercado. Qualquer instituição que emite certificados em PDF enviado por email está usando uma solução que não garante autenticidade. Eu quis resolver isso.
+URL pública de validação
+QR Code verificável
+Status de revogação
+Histórico de verificações
+Contador de acessos
+Proteção anti-enumeração
 
----
+A verificação não exige login.
 
-## Stack
+Sistema de revogação
 
-Eu não escolhi tecnologia por modismo. Eu escolhi o que faz sentido para o problema.
+A API suporta revogação segura de certificados.
 
-- **Next.js 16 + React 19** — Eu precisava de SSR para SEO na landing e CSR no dashboard. Next.js resolve os dois sem configuração extra.
-- **Node.js + Express** — Eu conheço o ecossistema, a comunidade é enorme e o desempenho para uma API REST é mais que suficiente para o estágio atual.
-- **PostgreSQL** — Dados relacionais com integridade transacional. Certificado tem dono, tem emissão, tem verificação — isso é relacional por natureza.
-- **JWT com rotação de claims** — Eu precisava carregar estado do usuário entre requisições sem consultar o banco em cada chamada. JWT resolve isso elegantemente quando bem implementado.
-- **Google OAuth 2.0** — Reduz fricção no cadastro e elimina responsabilidade de armazenar senhas para quem prefere essa rota.
-- **Cloudinary** — Eu precisava de armazenamento de PDFs com URL pública, CDN global e transformações on-the-fly. S3 seria mais barato em escala, mas o overhead de configuração não compensava agora. Cloudinary entrega CDN + storage + URL permanente sem infraestrutura adicional.
-- **Supabase** — PostgreSQL gerenciado com RLS nativo. Eu não queria gerenciar instância de banco nesse momento.
-- **Railway** — Deploy de backend Node.js com zero configuração de servidor. Eu foco no código, não em DevOps.
-- **Vercel** — Frontend Next.js com edge network global. A escolha óbvia quando você usa Next.js.
+Fluxo implementado:
 
----
+PATCH /api/certificates/:id/revoke
 
-## O que eu construí
+Características:
 
-Eu prefiro não listar tudo. Mas vou dizer o suficiente para despertar curiosidade.
+revogação idempotente;
+auditoria automática;
+resposta HTTP 410 Gone para certificados revogados;
+rastreamento de responsável pela revogação;
+motivo de revogação persistido.
+Arquitetura
 
-Eu implementei um sistema onde cada certificado gerado é matematicamente único e publicamente verificável — sem login, sem conta, sem fricção. Qualquer pessoa com o link ou QR Code confirma a autenticidade em tempo real.
+O backend foi estruturado em camadas separadas para manter responsabilidades isoladas e facilitar manutenção futura.
 
-Eu construí controle de planos que não dá pra burlar — não é só uma validação no frontend. A restrição existe em camadas no servidor, e eu pensei em cada uma delas.
+Routes
+  ↓
+Middlewares
+  ↓
+Controllers
+  ↓
+Models
+  ↓
+PostgreSQL
 
-Eu fiz uma experiência visual que não parece projeto de faculdade. Partículas, animações, dashboard com métricas em tempo real. Porque apresentação importa tanto quanto funcionalidade.
+Serviços externos:
 
-O resto você descobre acessando.
+PDF Service → geração de PDF
+Cloudinary Service → upload e CDN
+Auth Service → JWT + OAuth
+Stack Utilizada
+Frontend
+Next.js 16
+React 19
+TypeScript
+Tailwind CSS v4
+Framer Motion
+Three.js
+React Three Fiber
+Backend
+Node.js
+Express
+PostgreSQL
+Supabase
+JWT
+Passport.js
+Google OAuth 2.0
+Zod
+PDFKit
+Cloudinary
+Jest
+Supertest
+Segurança
 
----
+A segurança foi tratada como parte central do projeto.
 
-## Infra
+Camadas implementadas
+Autenticação
+JWT com issuer e audience validados
+Expiração de token
+OAuth 2.0 com Google
+bcrypt com salt rounds 12
+Proteção da API
+Helmet
+HPP
+CORS com whitelist
+Rate limit multicamadas
+Sanitização de entrada
+Anti-abuse por IP e fingerprint
+Banco de dados
+Row Level Security (RLS)
+Queries isoladas por usuário
+security_invoker = true
+LGPD
+CPF armazenado apenas como SHA-256
+CPF mascarado nos logs
+Rotas públicas nunca retornam dados sensíveis
+Defesa em Profundidade
 
-Eu montei uma arquitetura que separa responsabilidades com clareza:
+A aplicação possui múltiplas camadas de proteção:
 
-Frontend na **Vercel** — edge global, zero cold start para o usuário final.
+Cloudflare
+  ↓
+Global Rate Limit
+  ↓
+Auth Rate Limit
+  ↓
+Certificate Rate Limit
+  ↓
+Plan Limit Middleware
+  ↓
+Verification Protection
+Fluxo de Emissão
+Request
+  ↓
+JWT Validation
+  ↓
+Rate Limit
+  ↓
+Plan Validation
+  ↓
+Zod Validation
+  ↓
+Database INSERT
+  ↓
+PDF Generation
+  ↓
+Cloudinary Upload
+  ↓
+Audit Log
 
-Backend no **Railway** — isolado, escalável horizontalmente quando precisar, com logs estruturados que eu implementei do zero para rastrear cada requisição com ID único.
+Decisão arquitetural importante:
+o certificado é persistido antes da geração do PDF para evitar arquivos órfãos em caso de falha.
 
-Banco no **Supabase** — com Row Level Security ativo. Nenhuma query retorna dado de outro usuário, independente de como a requisição chegue.
+Observabilidade
 
-Arquivos no **Cloudinary** — CDN em mais de 80 países. Um PDF gerado no Brasil abre rápido no Japão.
+A API possui sistema próprio de logs estruturados.
 
----
+Recursos
+timestamps ISO;
+níveis de severidade;
+rastreamento de performance;
+PID por processo;
+logs de auditoria;
+diferenciação entre falha de infraestrutura e erro de aplicação.
+
+Exemplo de classificação de performance:
+
+⚡ <50ms
+🟡 <200ms
+🟠 <1000ms
+🔴 >=1000ms
+Testes
+
+Atualmente o projeto possui:
+
+99 testes passando
+0 falhando
+5 suites
+
+Cobertura atual:
+
+autenticação;
+emissão;
+verificação;
+middlewares;
+criptografia;
+formatadores;
+regras de negócio.
+
+Estrutura:
+
+__tests__/
+├── integration/
+├── unit/
+
+Ferramentas:
+
+Jest
+Supertest
+Infraestrutura
+Serviço	Plataforma
+Frontend	Vercel
+Backend	Railway
+Banco	Supabase
+CDN PDFs	Cloudinary
+Proteção DDoS	Cloudflare
+Diferenciais Técnicos
+Hash determinístico
+
+O sistema gera hashes consistentes para garantir integridade dos certificados ao longo do tempo.
+
+AuditLog desacoplado
+
+Falhas no sistema de auditoria não interrompem operações principais.
+
+Rate limit por usuário
+
+A emissão utiliza userId em vez de IP para evitar bypass por VPN.
+
+Certificados revogados
+
+Certificados revogados retornam:
+
+410 Gone
+
+Isso evita ambiguidades semânticas e melhora rastreabilidade.
+
+Próximos Passos
+
+Roadmap atual do projeto:
+
+assinatura digital avançada;
+email transacional;
+Stripe para planos pagos;
+API pública;
+webhooks;
+dashboard analítico;
+multi-tenant;
+templates customizados;
+passkeys/WebAuthn;
+blockchain hash anchoring.
+Aprendizados Durante o Projeto
+
+Este projeto serviu como estudo prático de:
+
+arquitetura em camadas;
+autenticação moderna;
+segurança em APIs;
+observabilidade;
+deploy cloud;
+integração contínua;
+PostgreSQL com RLS;
+testes automatizados;
+geração de PDFs;
+proteção anti-abuse;
+design de APIs REST.
+Uso de IA no Desenvolvimento
+
+Ferramentas de IA generativa foram utilizadas como suporte para:
+
+debugging;
+pesquisa técnica;
+refatoração;
+aceleração de desenvolvimento.
+
+Todas as decisões arquiteturais, validações, integrações e adaptações foram analisadas manualmente durante o desenvolvimento do projeto.
+
+Status do Projeto
+Em desenvolvimento ativo
+
+A NexaSpark continua evoluindo com foco em:
+
+segurança;
+escalabilidade;
+experiência do usuário;
+automação;
+confiabilidade da emissão digital.
