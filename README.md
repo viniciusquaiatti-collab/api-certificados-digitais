@@ -167,32 +167,6 @@ cd backend
 npm install
 ```
 
-Crie o arquivo `.env` com as variáveis necessárias:
-
-```env
-# Banco de dados — use o pooler Transaction do Supabase (porta 6543)
-DATABASE_URL=postgresql://postgres.[projeto]:[senha]@aws-0-us-west-2.pooler.supabase.com:6543/postgres
-
-# JWT — string longa e aleatória, mínimo 32 chars
-JWT_SECRET=sua_chave_secreta_aqui
-
-# Google OAuth — obtido no Google Cloud Console
-GOOGLE_CLIENT_ID=646997028538-xxx.apps.googleusercontent.com
-GOOGLE_CLIENT_SECRET=GOCSPX-xxx
-GOOGLE_CALLBACK_URL=http://localhost:8080/api/auth/google/callback
-
-# Cloudinary — obtido no dashboard do Cloudinary
-CLOUDINARY_URL=cloudinary://api_key:api_secret@cloud_name
-
-# URLs
-FRONTEND_URL=http://localhost:3000
-ALLOWED_ORIGINS=http://localhost:3000
-
-# Ambiente
-NODE_ENV=development
-PORT=8080
-```
-
 ```bash
 npm run dev
 ```
@@ -210,31 +184,6 @@ O boot completo mostra todas as rotas registradas e confirma a conexão com o ba
 ✅ PostgreSQL conectado ✅
 ```
 
-### Frontend
-
-```bash
-cd web
-npm install
-```
-
-Crie o arquivo `.env.local`:
-
-```env
-NEXT_PUBLIC_API_URL=http://localhost:8080
-```
-
-```bash
-npm run dev
-```
-
-### Rodando os testes
-
-```bash
-cd backend
-npm test
-```
-
-Saída esperada:
 
 ```
 Test Suites: 5 passed, 5 total
