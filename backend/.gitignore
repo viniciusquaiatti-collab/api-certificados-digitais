@@ -1,9 +1,9 @@
-# Dependências do Node.js
+﻿# Dependencias do Node.js
 node_modules/
 package-lock.json
 yarn.lock
 
-# Arquivos de ambiente sensíveis
+# Arquivos de ambiente sensiveis
 .env
 .env.local
 .env.development.local
@@ -18,23 +18,3 @@ public/certificates/
 
 # Logs e arquivos gerados
 *.log
-logs/
-dist/
-build/
-
-# Uploads
-uploads/
-
-# Configurações de editor
-.vscode/
-.idea/
-*.swp
-*.swo
-
-# Arquivos do sistema
-.DS_Store
-Thumbs.db
-
-# Testes
-coverage/
-.nyc_output/
